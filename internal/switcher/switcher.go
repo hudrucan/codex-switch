@@ -5,14 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
 	"github.com/SilkageNet/codex-switch/internal/authschema"
 	"github.com/SilkageNet/codex-switch/internal/codexhome"
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
-	"github.com/SilkageNet/codex-switch/internal/filelock"
 	"github.com/SilkageNet/codex-switch/internal/process"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
 	"github.com/SilkageNet/codex-switch/internal/vault"
@@ -148,7 +146,7 @@ func (service Service) Use(alias string, allowRunning bool) (Result, error) {
 }
 
 func (service Service) Deactivate(allowRunning bool) error {
-	lock, err := filelock.Acquire(filepath.Join(service.Home.Path, ".codex-switch.lock"))
+	lock, err := service.acquireLock()
 	if err != nil {
 		return err
 	}
@@ -200,7 +198,7 @@ func (service Service) Recover() error {
 	if err := service.Home.Ensure(); err != nil {
 		return err
 	}
-	lock, err := filelock.Acquire(filepath.Join(service.Home.Path, ".codex-switch.lock"))
+	lock, err := service.acquireLock()
 	if err != nil {
 		return err
 	}

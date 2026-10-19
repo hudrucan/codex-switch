@@ -10,6 +10,55 @@
 5. Unknown authentication schemas and ambiguous token generations fail closed.
 6. The live `auth.json` identity is authoritative. Persisted active state is a
    recovery hint and must never override a different live account ID.
+7. Every mutation holds the vault lock from before reading mutable state until
+   its writes finish. Operations using live authentication or related state
+   also acquire the live-home lock, always after the vault lock.
+
+## Mutation locking
+
+All vault writers acquire `<vault path>.lock`. Operations using live
+authentication or home-related state then acquire
+`CODEX_HOME/.codex-switch.lock`. The vault lock serializes writers sharing a
+vault even when they select different Codex homes. The home lock also protects
+one live projection when commands select different switcher data directories.
+Both use the existing nonblocking platform lock implementation: a contending
+command fails with the existing busy error and can be retried. Failure to
+acquire the home lock releases the vault lock; successful operations release
+both in reverse order. Lock files remain in place to keep a stable lock target
+across atomic vault replacement.
+
+Account add/reauth, rename, portable backup import (merge and replace), and the
+rotate-key command use only the vault lock because they do not read or write
+live authentication or home-related state. Rename and rotate-key therefore
+continue to work with a valid vault when `CODEX_HOME` is missing, without
+creating that home. This is a fixed choice based on the resources used by each
+command, never a fallback after a home-lock error. Import-current, remove,
+initialization of Codex configuration, switching, deactivation, sync, journal
+recovery, and usage refresh acquire both locks through the same helper. A
+home-lock failure aborts those operations and releases the vault lock.
+
+Official login, backup file reading, passphrase input, and backup decryption
+finish before acquiring the transaction lock. Add/reauth then reload the vault
+under its lock before applying alias and replacement rules. Reauth also takes a
+short vault lock before login to capture the existing target's stable profile
+ID and alias, then releases it for login. Its write transaction requires that
+same ID to still own the unchanged alias; removal, rename (including a case-only
+rename), or alias reassignment aborts without saving credentials. Reauth never
+creates a profile; account add remains a separate insertion path. Backup import
+reloads and validates the current vault under the lock for both merge and
+explicit replacement; merge retains concurrent changes and rejects current
+alias conflicts. `--replace` still intentionally replaces the validated vault.
+
+Internal vault `Save` and `RotateKey` require their caller to hold the vault
+lock; they do not reacquire it. Initialization acquires the vault lock before
+checking whether a vault exists and releases it before any transaction lock is
+acquired. This avoids nested acquisition during runtime setup. Read-only
+observation and backup export do not mutate the vault and do not acquire the
+operation lock.
+
+This change does not alter key rotation or credential-refresh algorithms. All
+concurrent writers must use this locking protocol; older binaries that omit
+vault locking must not run mutations concurrently with the updated CLI.
 
 ## Components
 

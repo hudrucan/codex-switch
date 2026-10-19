@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
@@ -363,6 +362,6 @@ func (service Service) ensureLiveHash(expected string) error {
 	return nil
 }
 
-func (service Service) acquireLock() (*filelock.Lock, error) {
-	return filelock.Acquire(filepath.Join(service.Home.Path, ".codex-switch.lock"))
+func (service Service) acquireLock() (*filelock.Operation, error) {
+	return filelock.AcquireOperation(service.Paths.Vault, service.Home.Path)
 }

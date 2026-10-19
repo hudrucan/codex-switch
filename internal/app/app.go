@@ -23,6 +23,7 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/codexusage"
 	appconfig "github.com/SilkageNet/codex-switch/internal/config"
 	"github.com/SilkageNet/codex-switch/internal/doctor"
+	"github.com/SilkageNet/codex-switch/internal/filelock"
 	"github.com/SilkageNet/codex-switch/internal/launcher"
 	"github.com/SilkageNet/codex-switch/internal/secretstore"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
@@ -42,6 +43,9 @@ type Options struct {
 	Input     io.Reader
 	Output    io.Writer
 	Error     io.Writer
+
+	runtimeLoader func(bool) (runtimeState, error)
+	login         func(bool) (authschema.Document, error)
 }
 
 type runtimeState struct {
@@ -123,6 +127,11 @@ func newInitCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
 			mode, err := runtime.home.CredentialStore()
 			if err != nil {
 				return err
@@ -173,6 +182,11 @@ func newAccountImportCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
 			raw, err := runtime.home.ReadAuth()
 			if err != nil {
 				return fmt.Errorf("read active Codex login: %w", err)
@@ -181,7 +195,7 @@ func newAccountImportCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			profile, err := addDocument(runtime.manager, args[0], "import-current", document, false)
+			profile, err := addDocument(runtime.manager, args[0], "import-current", document)
 			if err != nil {
 				return err
 			}
@@ -217,12 +231,33 @@ func newAccountAddCommand(options *Options, reauth bool) *cobra.Command {
 			if runtime.bin == "" {
 				return errors.New("official Codex executable not found; install Codex or pass --codex-binary")
 			}
+			var target reauthTarget
+			if reauth {
+				target, err = runtime.captureReauthTarget(args[0])
+				if err != nil {
+					return err
+				}
+			}
 			runner := codexlogin.Runner{Binary: runtime.bin, Stdin: options.Input, Stdout: options.Output, Stderr: options.Error}
-			document, err := runner.Login(deviceAuth)
+			login := runner.Login
+			if options.login != nil {
+				login = options.login
+			}
+			document, err := login(deviceAuth)
 			if err != nil {
 				return err
 			}
-			profile, err := addDocument(runtime.manager, args[0], map[bool]string{true: "reauth", false: "codex-login"}[reauth], document, reauth)
+			lock, err := runtime.acquireVaultLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
+			var profile vault.Profile
+			if reauth {
+				profile, err = reauthDocument(runtime.manager, target, args[0], document)
+			} else {
+				profile, err = addDocument(runtime.manager, args[0], "codex-login", document)
+			}
 			if err != nil {
 				return err
 			}
@@ -488,6 +523,11 @@ func newAccountRenameCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireVaultLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
 			data, err := runtime.manager.Load()
 			if err != nil {
 				return err
@@ -521,6 +561,11 @@ func newAccountRemoveCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
 			data, err := runtime.manager.Load()
 			if err != nil {
 				return err
@@ -824,11 +869,16 @@ func newVaultCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireVaultLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
+			current, err := runtime.manager.Load()
+			if err != nil {
+				return err
+			}
 			if !replace {
-				current, err := runtime.manager.Load()
-				if err != nil {
-					return err
-				}
 				for _, profile := range imported.Profiles {
 					if err := current.Add(profile, false); err != nil {
 						return fmt.Errorf("merge imported profile %q: %w", profile.Alias, err)
@@ -853,6 +903,11 @@ func newVaultCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			lock, err := runtime.acquireVaultLock()
+			if err != nil {
+				return err
+			}
+			defer func() { _ = lock.Close() }()
 			if err := runtime.manager.RotateKey(); err != nil {
 				return err
 			}
@@ -920,6 +975,9 @@ func newCompletionCommand(root *cobra.Command) *cobra.Command {
 }
 
 func (options *Options) loadRuntime(create bool) (runtimeState, error) {
+	if options.runtimeLoader != nil {
+		return options.runtimeLoader(create)
+	}
 	home, err := codexhome.Resolve(options.CodexHome)
 	if err != nil {
 		return runtimeState{}, err
@@ -965,6 +1023,14 @@ func (options *Options) loadRuntimeForDoctor() (runtimeState, error) {
 	}
 	bin, binErr := codexlogin.FindBinary(options.CodexBin)
 	return runtimeState{home: home, paths: paths, manager: vault.New(paths.Vault, store), bin: bin, binErr: binErr}, nil
+}
+
+func (runtime runtimeState) acquireLock() (*filelock.Operation, error) {
+	return filelock.AcquireOperation(runtime.paths.Vault, runtime.home.Path)
+}
+
+func (runtime runtimeState) acquireVaultLock() (*filelock.Lock, error) {
+	return filelock.AcquireVault(runtime.paths.Vault)
 }
 
 func (runtime runtimeState) switcher() switcher.Service {
@@ -1071,14 +1137,15 @@ func observationNotice(observation switcher.Observation) string {
 	}
 }
 
-func addDocument(manager *vault.Manager, alias, source string, document authschema.Document, replace bool) (vault.Profile, error) {
+// addDocument runs inside the caller's vault lock and reloads current state.
+func addDocument(manager *vault.Manager, alias, source string, document authschema.Document) (vault.Profile, error) {
 	data, err := manager.Load()
 	if err != nil {
 		return vault.Profile{}, err
 	}
 	updatedAt, _ := document.GenerationTime()
 	profile := vault.NewProfile(alias, source, document.Raw, document.Tokens.AccountID, document.WorkspaceID, document.Email, updatedAt)
-	if err := data.Add(profile, replace); err != nil {
+	if err := data.Add(profile, false); err != nil {
 		return vault.Profile{}, err
 	}
 	if err := manager.Save(data); err != nil {
@@ -1089,6 +1156,60 @@ func addDocument(manager *vault.Manager, alias, source string, document authsche
 		return vault.Profile{}, err
 	}
 	return *saved, nil
+}
+
+type reauthTarget struct {
+	ID    string
+	Alias string
+}
+
+func (runtime runtimeState) captureReauthTarget(alias string) (reauthTarget, error) {
+	if err := vault.ValidateAlias(alias); err != nil {
+		return reauthTarget{}, err
+	}
+	lock, err := runtime.acquireVaultLock()
+	if err != nil {
+		return reauthTarget{}, err
+	}
+	defer func() { _ = lock.Close() }()
+	data, err := runtime.manager.Load()
+	if err != nil {
+		return reauthTarget{}, err
+	}
+	// Match aliases explicitly: Data.Find also accepts profile IDs.
+	for _, profile := range data.Profiles {
+		if strings.EqualFold(profile.Alias, alias) {
+			return reauthTarget{ID: profile.ID, Alias: profile.Alias}, nil
+		}
+	}
+	return reauthTarget{}, fmt.Errorf("account profile %q not found; use account add to create a profile", alias)
+}
+
+// reauthDocument runs under the caller's vault lock and replaces only the
+// original profile if its alias still matches the pre-login snapshot.
+func reauthDocument(manager *vault.Manager, target reauthTarget, alias string, document authschema.Document) (vault.Profile, error) {
+	data, err := manager.Load()
+	if err != nil {
+		return vault.Profile{}, err
+	}
+	for index, current := range data.Profiles {
+		if current.ID != target.ID {
+			continue
+		}
+		if current.Alias != target.Alias || !strings.EqualFold(current.Alias, alias) {
+			break
+		}
+		updatedAt, _ := document.GenerationTime()
+		profile := vault.NewProfile(alias, "reauth", document.Raw, document.Tokens.AccountID, document.WorkspaceID, document.Email, updatedAt)
+		profile.ID = current.ID
+		profile.CreatedAt = current.CreatedAt
+		data.Profiles[index] = profile
+		if err := manager.Save(data); err != nil {
+			return vault.Profile{}, err
+		}
+		return profile, nil
+	}
+	return vault.Profile{}, errors.New("reauthentication target changed during login; no credentials were saved; retry reauth for the intended profile")
 }
 
 func toView(profile vault.Profile, active bool) accountView {

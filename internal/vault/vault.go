@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
+	"github.com/SilkageNet/codex-switch/internal/filelock"
 	"github.com/SilkageNet/codex-switch/internal/secretstore"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
@@ -71,6 +73,15 @@ func New(path string, store secretstore.Store) *Manager {
 }
 
 func (manager *Manager) Init() (Data, error) {
+	// Initialization runs before operation locking, including on an empty home.
+	if err := os.MkdirAll(filepath.Dir(manager.path), 0o700); err != nil {
+		return Data{}, err
+	}
+	lock, err := filelock.AcquireVault(manager.path)
+	if err != nil {
+		return Data{}, err
+	}
+	defer func() { _ = lock.Close() }()
 	data, err := manager.Load()
 	if err == nil {
 		return data, nil
@@ -108,6 +119,7 @@ func (manager *Manager) Load() (Data, error) {
 	return decodeData(plaintext)
 }
 
+// Save requires the caller to hold the vault lock from before loading data.
 func (manager *Manager) Save(data Data) error {
 	encoded, err := atomicfile.ReadLimited(manager.path, 32<<20)
 	if errors.Is(err, os.ErrNotExist) {
@@ -127,6 +139,7 @@ func (manager *Manager) Save(data Data) error {
 	return manager.write(data, current.KeyID, key)
 }
 
+// RotateKey requires the caller to hold the vault lock.
 func (manager *Manager) RotateKey() error {
 	data, err := manager.Load()
 	if err != nil {

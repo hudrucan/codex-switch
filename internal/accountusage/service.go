@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/SilkageNet/codex-switch/internal/atomicfile"
@@ -64,7 +63,7 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (map[st
 	if service.Runner == nil {
 		return nil, errors.New("account usage runner is not configured")
 	}
-	lock, err := filelock.Acquire(filepath.Join(service.Home.Path, ".codex-switch.lock"))
+	lock, err := filelock.AcquireOperation(service.Paths.Vault, service.Home.Path)
 	if err != nil {
 		return nil, err
 	}

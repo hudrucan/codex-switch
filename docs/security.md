@@ -61,6 +61,48 @@ focuses on:
 - Authentication documents larger than the configured limit are rejected.
 - A symlink at a managed destination is rejected instead of followed.
 
+## Vault key publication and recovery
+
+Vault creation and rotation store a fresh key before publishing its encrypted
+envelope. The key is read back and compared with the generated value before
+replacement. After the atomic write reports success, the manager reads and
+decrypts the published envelope using the credential store and checks its key
+identifier before deleting the previous key. Rotation uses the old identifier
+from the same envelope that was decrypted, rather than a separate file read.
+
+Atomic write errors distinguish replacement not attempted, replacement outcome
+uncertain, and replacement completed with a later failure. A failed replacement
+call is treated as uncertain even if it usually leaves the destination
+unchanged. Success requires temporary-file sync and close, platform replacement,
+and the platform's parent-directory durability step. Temporary-file close and
+removal failures are included in the error instead of silently discarded.
+
+No key-store rollback deletion runs on a failed or interrupted write, including
+initial creation. Both old and new keys are retained when publication or
+verification is uncertain; a fresh process uses the surviving envelope's key
+identifier to decrypt it. This needs no new vault format or plaintext recovery
+file. A later rotation can proceed from whichever valid envelope survived.
+Initialization checks that the vault path itself is absent before creating an
+empty vault; a missing key-store resource cannot trigger reinitialization of an
+existing vault.
+
+If deletion of the previous key fails or has an uncertain outcome, the command
+returns an error explicitly stating that rotation committed but cleanup could
+not be confirmed. The current vault still has its verified new key. Failed or
+interrupted operations can leave orphaned keys in the operating-system store;
+they are deliberately not garbage-collected automatically. A leftover encrypted
+temporary file is not selected as the active vault.
+
+These guarantees assume the credential store preserves acknowledged writes and
+the filesystem honors its sync/replacement primitives. Read-back verification
+detects immediately missing or incorrect keys; it cannot guarantee hardware
+durability or availability of an offline credential store. Unix syncs the parent
+directory; Windows retains the existing write-through `MoveFileEx` replacement
+without a separate directory sync. Fault-injection tests model software failure
+and interruption boundaries, including helper-process exit before and after
+publication using synthetic persistent stores. They do not simulate physical
+power loss or storage corruption.
+
 ## Platform credential-store adapters
 
 The macOS implementation invokes the system `security` utility without a shell.

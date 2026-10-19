@@ -56,9 +56,37 @@ acquired. This avoids nested acquisition during runtime setup. Read-only
 observation and backup export do not mutate the vault and do not acquire the
 operation lock.
 
-This change does not alter key rotation or credential-refresh algorithms. All
-concurrent writers must use this locking protocol; older binaries that omit
+All concurrent writers must use this locking protocol; older binaries that omit
 vault locking must not run mutations concurrently with the updated CLI.
+
+## Vault key lifecycle
+
+```text
+hold vault lock
+  -> decrypt the current envelope and capture its key ID (rotation only)
+  -> generate and store a new key
+  -> read back and verify the stored key
+  -> write and sync the encrypted temporary file
+  -> atomically replace the vault
+  -> confirm platform directory durability
+  -> read back and decrypt the new envelope using the credential store
+  -> verify the new key ID
+  -> delete only the previous key
+```
+
+`atomicfile.Write` keeps its error-returning API. A `WriteError` exposes whether
+replacement was not attempted, was attempted with an uncertain outcome, or
+completed before a later failure. Only a nil write error confirms all durability
+steps completed. Cleanup failures preserve the original error and classification.
+
+Any error before old-key deletion retains stored keys, even when a failed write
+appears to precede publication. Initialization and missing-vault `Save` use the
+same protocol. Interrupted publication leaves no in-memory recovery dependency:
+the next load reads the envelope's key ID and uses its retained key. Successful
+rotation after a recoverable failure deletes only the immediately previous key;
+older orphaned keys are retained. A cleanup error after verified commit reports
+the committed state explicitly, so a retry never assumes the old key is active.
+See `security.md` for durability assumptions and retained-orphan limitations.
 
 ## Components
 

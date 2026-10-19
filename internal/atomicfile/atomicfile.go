@@ -11,6 +11,40 @@ import (
 
 const DefaultReadLimit int64 = 4 << 20
 
+type ReplacementState uint8
+
+const (
+	ReplacementNotAttempted ReplacementState = iota
+	ReplacementUncertain
+	ReplacementCompleted
+)
+
+// WriteError distinguishes failure before replacement from an uncertain
+// replacement or a published destination whose durability was not confirmed.
+// A nil error is the only confirmation that all write steps completed.
+type WriteError struct {
+	Err         error
+	Replacement ReplacementState
+}
+
+func (err *WriteError) Error() string { return err.Err.Error() }
+func (err *WriteError) Unwrap() error { return err.Err }
+
+type temporaryFile interface {
+	Name() string
+	Chmod(os.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type writeOperations struct {
+	createTemp func(string, string) (temporaryFile, error)
+	replace    func(string, string) error
+	syncParent func(string) error
+	remove     func(string) error
+}
+
 func ReadLimited(path string, limit int64) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -52,6 +86,21 @@ func FileHash(path string) (string, error) {
 }
 
 func Write(path string, data []byte, mode os.FileMode) error {
+	return write(path, data, mode, writeOperations{
+		createTemp: func(dir, pattern string) (temporaryFile, error) {
+			return os.CreateTemp(dir, pattern)
+		},
+		replace: replace, syncParent: syncParent, remove: os.Remove,
+	})
+}
+
+func write(path string, data []byte, mode os.FileMode, operations writeOperations) (result error) {
+	state := ReplacementNotAttempted
+	defer func() {
+		if result != nil {
+			result = &WriteError{Err: result, Replacement: state}
+		}
+	}()
 	parent := filepath.Dir(path)
 	if err := os.MkdirAll(parent, 0o700); err != nil {
 		return fmt.Errorf("create parent directory: %w", err)
@@ -62,36 +111,48 @@ func Write(path string, data []byte, mode os.FileMode) error {
 		return fmt.Errorf("inspect destination: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(parent, ".codex-switch-*.tmp")
+	tmp, err := operations.createTemp(parent, ".codex-switch-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temporary file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	committed := false
+	closed := false
 	defer func() {
-		_ = tmp.Close()
-		if !committed {
-			_ = os.Remove(tmpPath)
+		if !closed {
+			if err := tmp.Close(); err != nil {
+				result = errors.Join(result, fmt.Errorf("close temporary file: %w", err))
+			}
+		}
+		if state != ReplacementCompleted {
+			if err := operations.remove(tmpPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				result = errors.Join(result, fmt.Errorf("remove temporary file: %w", err))
+			}
 		}
 	}()
 
 	if err := tmp.Chmod(mode); err != nil {
 		return fmt.Errorf("set temporary file mode: %w", err)
 	}
-	if _, err := tmp.Write(data); err != nil {
+	if written, err := tmp.Write(data); err != nil {
 		return fmt.Errorf("write temporary file: %w", err)
+	} else if written != len(data) {
+		return fmt.Errorf("write temporary file: %w", io.ErrShortWrite)
 	}
 	if err := tmp.Sync(); err != nil {
 		return fmt.Errorf("sync temporary file: %w", err)
 	}
+	closed = true
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temporary file: %w", err)
 	}
-	if err := replace(tmpPath, path); err != nil {
+	// A replacement call that returns an error can have an uncertain outcome.
+	// Do not infer that the destination is unchanged merely from that error.
+	state = ReplacementUncertain
+	if err := operations.replace(tmpPath, path); err != nil {
 		return fmt.Errorf("publish %s: %w", path, err)
 	}
-	committed = true
-	if err := syncParent(parent); err != nil {
+	state = ReplacementCompleted
+	if err := operations.syncParent(parent); err != nil {
 		return fmt.Errorf("sync parent directory: %w", err)
 	}
 	return nil

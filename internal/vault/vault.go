@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -64,12 +65,13 @@ type portableEnvelope struct {
 }
 
 type Manager struct {
-	path  string
-	store secretstore.Store
+	path      string
+	store     secretstore.Store
+	writeFile func(string, []byte, os.FileMode) error
 }
 
 func New(path string, store secretstore.Store) *Manager {
-	return &Manager{path: path, store: store}
+	return &Manager{path: path, store: store, writeFile: atomicfile.Write}
 }
 
 func (manager *Manager) Init() (Data, error) {
@@ -89,6 +91,10 @@ func (manager *Manager) Init() (Data, error) {
 	if !errors.Is(err, os.ErrNotExist) {
 		return Data{}, err
 	}
+	// A missing key-store resource must not be mistaken for a missing vault.
+	if _, pathErr := os.Lstat(manager.path); !errors.Is(pathErr, os.ErrNotExist) {
+		return Data{}, err
+	}
 	data = Data{Version: 1, Profiles: []Profile{}}
 	if err := manager.saveWithNewKey(data, ""); err != nil {
 		return Data{}, err
@@ -97,26 +103,33 @@ func (manager *Manager) Init() (Data, error) {
 }
 
 func (manager *Manager) Load() (Data, error) {
+	data, _, err := manager.load()
+	return data, err
+}
+
+// load returns the key identifier from the same envelope that was decrypted.
+func (manager *Manager) load() (Data, string, error) {
 	encoded, err := atomicfile.ReadLimited(manager.path, 32<<20)
 	if err != nil {
-		return Data{}, err
+		return Data{}, "", err
 	}
 	var wrapper envelope
 	if err := json.Unmarshal(encoded, &wrapper); err != nil {
-		return Data{}, fmt.Errorf("decode vault envelope: %w", err)
+		return Data{}, "", fmt.Errorf("decode vault envelope: %w", err)
 	}
 	if wrapper.Version != 1 || wrapper.Cipher != "xchacha20-poly1305" || wrapper.KeyID == "" {
-		return Data{}, errors.New("unsupported vault envelope")
+		return Data{}, "", errors.New("unsupported vault envelope")
 	}
 	key, err := manager.readKey(wrapper.KeyID)
 	if err != nil {
-		return Data{}, err
+		return Data{}, "", err
 	}
 	plaintext, err := decrypt(key, wrapper.Nonce, wrapper.Ciphertext, []byte(associatedData))
 	if err != nil {
-		return Data{}, fmt.Errorf("decrypt vault: %w", err)
+		return Data{}, "", fmt.Errorf("decrypt vault: %w", err)
 	}
-	return decodeData(plaintext)
+	data, err := decodeData(plaintext)
+	return data, wrapper.KeyID, err
 }
 
 // Save requires the caller to hold the vault lock from before loading data.
@@ -141,22 +154,11 @@ func (manager *Manager) Save(data Data) error {
 
 // RotateKey requires the caller to hold the vault lock.
 func (manager *Manager) RotateKey() error {
-	data, err := manager.Load()
+	data, oldKeyID, err := manager.load()
 	if err != nil {
 		return err
 	}
-	encoded, err := atomicfile.ReadLimited(manager.path, 32<<20)
-	if err != nil {
-		return err
-	}
-	var old envelope
-	if err := json.Unmarshal(encoded, &old); err != nil {
-		return err
-	}
-	if err := manager.saveWithNewKey(data, old.KeyID); err != nil {
-		return err
-	}
-	return nil
+	return manager.saveWithNewKey(data, oldKeyID)
 }
 
 func (manager *Manager) saveWithNewKey(data Data, oldKeyID string) error {
@@ -169,14 +171,26 @@ func (manager *Manager) saveWithNewKey(data Data, oldKeyID string) error {
 		return err
 	}
 	if err := manager.store.Set("master-key/"+keyID, base64.RawStdEncoding.EncodeToString(key)); err != nil {
-		return fmt.Errorf("store vault key: %w", err)
+		// A store may have persisted the key before reporting failure. Retain it.
+		return errors.New("store vault key failed (credential-store diagnostics redacted)")
+	}
+	storedKey, err := manager.readKey(keyID)
+	if err != nil || !bytes.Equal(storedKey, key) {
+		return errors.New("new vault key could not be verified; vault was not replaced")
 	}
 	if err := manager.write(data, keyID, key); err != nil {
-		_ = manager.store.Delete("master-key/" + keyID)
+		// Never roll back key storage: replacement may already have happened,
+		// or an interrupted write may leave its outcome uncertain. An orphaned
+		// key is preferable to a published vault with no decryption key.
 		return err
 	}
+	if _, publishedKeyID, err := manager.load(); err != nil || publishedKeyID != keyID {
+		return errors.New("vault publication could not be verified; vault keys retained")
+	}
 	if oldKeyID != "" && oldKeyID != keyID {
-		_ = manager.store.Delete("master-key/" + oldKeyID)
+		if err := manager.store.Delete("master-key/" + oldKeyID); err != nil {
+			return errors.New("vault key rotation committed; previous key cleanup could not be confirmed")
+		}
 	}
 	return nil
 }
@@ -204,7 +218,7 @@ func (manager *Manager) write(data Data, keyID string, key []byte) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(manager.path, append(encoded, '\n'), 0o600)
+	return manager.writeFile(manager.path, append(encoded, '\n'), 0o600)
 }
 
 func (manager *Manager) readKey(keyID string) ([]byte, error) {

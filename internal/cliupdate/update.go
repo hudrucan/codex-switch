@@ -14,18 +14,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
-	"github.com/minio/selfupdate"
 	"golang.org/x/mod/semver"
 )
 
 const (
-	latestReleaseURL = "https://api.github.com/repos/SilkageNet/codex-switch/releases/latest"
+	latestReleaseURL = "https://api.github.com/repos/" + TrustedRepository + "/releases/latest"
 	maxMetadataBytes = 2 << 20
+	maxChecksumBytes = 1 << 20
 	maxDownloadBytes = 128 << 20
 	maxBinaryBytes   = 64 << 20
 )
@@ -37,8 +35,11 @@ type asset struct {
 }
 
 type release struct {
-	TagName string  `json:"tag_name"`
-	Assets  []asset `json:"assets"`
+	TagName    string  `json:"tag_name"`
+	HTMLURL    string  `json:"html_url"`
+	Draft      bool    `json:"draft"`
+	Prerelease bool    `json:"prerelease"`
+	Assets     []asset `json:"assets"`
 }
 
 type Result struct {
@@ -48,8 +49,18 @@ type Result struct {
 	Updated   bool   `json:"updated"`
 }
 
-func Run(ctx context.Context, installed string, checkOnly bool) (Result, error) {
-	client := &http.Client{Timeout: 45 * time.Second}
+func Run(ctx context.Context, installed string, checkOnly bool, provenance ...Provenance) (Result, error) {
+	var build Provenance
+	if len(provenance) == 1 {
+		build = provenance[0]
+	}
+	return run(ctx, installed, checkOnly, build, releaseClient(nil), runtime.GOOS, runtime.GOARCH, replaceExecutable)
+}
+
+func run(ctx context.Context, installed string, checkOnly bool, build Provenance, client *http.Client, goos, goarch string, apply func([]byte) error) (Result, error) {
+	if !checkOnly && (build.Repository != TrustedRepository || build.Channel != "release" || !validTag(normalizeVersion(installed))) {
+		return Result{}, errors.New("self-update requires a trusted fork release build; source or unknown-provenance builds must be installed manually")
+	}
 	latest, err := fetchRelease(ctx, client)
 	if err != nil {
 		return Result{}, err
@@ -63,7 +74,10 @@ func Run(ctx context.Context, installed string, checkOnly bool) (Result, error) 
 		return result, nil
 	}
 
-	archiveName := archiveName(latest.TagName, runtime.GOOS, runtime.GOARCH)
+	if !supportedPlatform(goos, goarch) {
+		return Result{}, errors.New("unsupported release platform")
+	}
+	archiveName := archiveName(latest.TagName, goos, goarch)
 	archiveAsset, err := findAsset(latest, archiveName)
 	if err != nil {
 		return Result{}, err
@@ -92,8 +106,8 @@ func Run(ctx context.Context, installed string, checkOnly bool) (Result, error) 
 	if err != nil {
 		return Result{}, err
 	}
-	if err := selfupdate.Apply(bytes.NewReader(binary), selfupdate.Options{}); err != nil {
-		return Result{}, fmt.Errorf("replace current executable: %w", err)
+	if err := apply(binary); err != nil {
+		return Result{}, err
 	}
 	result.Updated = true
 	return result, nil
@@ -109,35 +123,32 @@ func fetchRelease(ctx context.Context, client *http.Client) (release, error) {
 	request.Header.Set("User-Agent", "codex-switch")
 	response, err := client.Do(request)
 	if err != nil {
-		return release{}, fmt.Errorf("query latest release: %w", err)
+		return release{}, errors.New("release metadata request failed (diagnostics redacted)")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return release{}, fmt.Errorf("query latest release: GitHub returned %s", response.Status)
+		return release{}, fmt.Errorf("release metadata returned HTTP %d", response.StatusCode)
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxMetadataBytes+1))
 	if err != nil {
-		return release{}, err
+		return release{}, errors.New("release metadata could not be read")
 	}
 	if len(encoded) > maxMetadataBytes {
 		return release{}, errors.New("latest release metadata is too large")
 	}
 	var latest release
-	if err := json.Unmarshal(encoded, &latest); err != nil {
-		return release{}, fmt.Errorf("decode latest release: %w", err)
+	if !uniqueJSON(encoded) || json.Unmarshal(encoded, &latest) != nil {
+		return release{}, errors.New("invalid release metadata")
 	}
-	if !semver.IsValid(latest.TagName) {
-		return release{}, fmt.Errorf("latest release tag %q is not semantic versioning", latest.TagName)
+	if err := validateRelease(latest); err != nil {
+		return release{}, err
 	}
 	return latest, nil
 }
 
 func isCurrent(installed, latest string) bool {
-	current := installed
-	if !strings.HasPrefix(current, "v") {
-		current = "v" + current
-	}
-	if !semver.IsValid(current) {
+	current := normalizeVersion(installed)
+	if !validTag(current) {
 		return false
 	}
 	return semver.Compare(current, latest) >= 0
@@ -153,57 +164,83 @@ func archiveName(tag, goos, goarch string) string {
 }
 
 func findAsset(latest release, name string) (asset, error) {
+	var result asset
+	count := 0
 	for _, candidate := range latest.Assets {
 		if candidate.Name == name {
-			return candidate, nil
+			result = candidate
+			count++
 		}
 	}
-	return asset{}, fmt.Errorf("release asset %q was not found", name)
+	if count != 1 {
+		return asset{}, errors.New("required release asset is missing or duplicated")
+	}
+	return result, nil
 }
 
 func download(ctx context.Context, client *http.Client, source asset) ([]byte, error) {
-	if source.Size < 0 || source.Size > maxDownloadBytes {
-		return nil, fmt.Errorf("release asset %q has an invalid size", source.Name)
+	limit := int64(maxDownloadBytes)
+	if source.Name == "checksums.txt" {
+		limit = maxChecksumBytes
+	}
+	if source.Size <= 0 || source.Size > limit {
+		return nil, errors.New("release asset has an invalid size")
 	}
 	parsed, err := url.Parse(source.BrowserDownloadURL)
-	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "github.com") {
-		return nil, fmt.Errorf("release asset %q has an untrusted URL", source.Name)
+	if err != nil || !validDownloadURL(parsed) {
+		return nil, errors.New("release asset has an untrusted URL")
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.BrowserDownloadURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("invalid release request")
 	}
 	request.Header.Set("User-Agent", "codex-switch")
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, errors.New("release download failed (diagnostics redacted)")
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub returned %s for %s", response.Status, source.Name)
+		return nil, fmt.Errorf("release download returned HTTP %d", response.StatusCode)
 	}
-	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxDownloadBytes+1))
+	encoded, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("release download could not be read")
 	}
-	if len(encoded) > maxDownloadBytes {
-		return nil, fmt.Errorf("release asset %q is too large", source.Name)
+	if int64(len(encoded)) != source.Size || int64(len(encoded)) > limit {
+		return nil, errors.New("release asset size disagrees with metadata or exceeds its limit")
 	}
 	return encoded, nil
 }
 
 func checksumFor(checksums []byte, name string) ([]byte, error) {
+	if len(checksums) > maxChecksumBytes {
+		return nil, errors.New("checksum manifest is too large")
+	}
+	var result []byte
+	seen := map[string]bool{}
 	for _, line := range strings.Split(string(checksums), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
 		fields := strings.Fields(line)
-		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == name {
-			decoded, err := hex.DecodeString(fields[0])
-			if err != nil || len(decoded) != sha256.Size {
-				return nil, fmt.Errorf("checksum for %q is invalid", name)
-			}
-			return decoded, nil
+		if len(fields) != 2 {
+			return nil, errors.New("malformed checksum manifest")
+		}
+		filename := strings.TrimPrefix(fields[1], "*")
+		decoded, err := hex.DecodeString(fields[0])
+		if err != nil || len(decoded) != sha256.Size || !safeAssetName(filename) || seen[filename] {
+			return nil, errors.New("invalid or ambiguous checksum manifest")
+		}
+		seen[filename] = true
+		if filename == name {
+			result = decoded
 		}
 	}
-	return nil, fmt.Errorf("checksum for %q was not found", name)
+	if result == nil {
+		return nil, errors.New("required archive checksum is missing")
+	}
+	return result, nil
 }
 
 func extractBinary(name string, archive []byte) ([]byte, error) {
@@ -219,62 +256,89 @@ func extractBinary(name string, archive []byte) ([]byte, error) {
 func extractZip(encoded []byte) ([]byte, error) {
 	reader, err := zip.NewReader(bytes.NewReader(encoded), int64(len(encoded)))
 	if err != nil {
-		return nil, fmt.Errorf("open release zip: %w", err)
+		return nil, errors.New("invalid release zip")
 	}
+	state := archiveState{expected: "codex-switch.exe", seen: map[string]bool{}}
 	for _, entry := range reader.File {
-		if filepath.Base(entry.Name) != "codex-switch.exe" || entry.FileInfo().IsDir() {
-			continue
+		if !entry.Mode().IsRegular() && !entry.Mode().IsDir() {
+			return nil, errors.New("special archive entry rejected")
 		}
-		if entry.UncompressedSize64 > maxBinaryBytes {
-			return nil, errors.New("release executable is too large")
+		if entry.UncompressedSize64 > maxDownloadBytes {
+			return nil, errors.New("archive entry too large")
+		}
+		if err := state.check(entry.Name, entry.Mode().IsDir(), int64(entry.UncompressedSize64)); err != nil {
+			return nil, err
+		}
+		if entry.Mode().IsDir() {
+			continue
 		}
 		stream, err := entry.Open()
 		if err != nil {
-			return nil, err
+			return nil, errors.New("unreadable zip entry")
 		}
-		binary, readErr := readBinary(stream)
+		data, readErr := readBinary(stream)
 		closeErr := stream.Close()
-		if readErr != nil {
-			return nil, readErr
+		if readErr != nil || closeErr != nil || int64(len(data)) != int64(entry.UncompressedSize64) {
+			return nil, errors.New("invalid zip entry data")
 		}
-		if closeErr != nil {
-			return nil, closeErr
+		if entry.Name == state.expected {
+			state.binary = data
 		}
-		return binary, nil
 	}
-	return nil, errors.New("codex-switch.exe was not found in the release archive")
+	return state.finish()
 }
 
 func extractTarGzip(encoded []byte) ([]byte, error) {
-	gzipReader, err := gzip.NewReader(bytes.NewReader(encoded))
+	compressed := bytes.NewReader(encoded)
+	gzipReader, err := gzip.NewReader(compressed)
 	if err != nil {
-		return nil, fmt.Errorf("open release gzip: %w", err)
+		return nil, errors.New("invalid release gzip")
 	}
+	gzipReader.Multistream(false)
 	defer func() { _ = gzipReader.Close() }()
-	tarReader := tar.NewReader(gzipReader)
+	expanded := &io.LimitedReader{R: gzipReader, N: maxDownloadBytes + (1 << 20) + 1}
+	tarReader := tar.NewReader(expanded)
+	state := archiveState{expected: "codex-switch", seen: map[string]bool{}}
 	for {
 		header, err := tarReader.Next()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read release tar: %w", err)
+			return nil, errors.New("invalid release tar")
 		}
-		if filepath.Base(header.Name) != "codex-switch" || header.Typeflag != tar.TypeReg {
+		isDir := header.Typeflag == tar.TypeDir
+		if !isDir && header.Typeflag != tar.TypeReg {
+			return nil, errors.New("special archive entry rejected")
+		}
+		if header.Format != tar.FormatUSTAR || len(header.PAXRecords) != 0 {
+			return nil, errors.New("extended archive entries rejected")
+		}
+		if err := state.check(header.Name, isDir, header.Size); err != nil {
+			return nil, err
+		}
+		if isDir {
 			continue
 		}
-		if header.Size < 0 || header.Size > maxBinaryBytes {
-			return nil, errors.New("release executable is too large")
+		data, err := readBinary(tarReader)
+		if err != nil || int64(len(data)) != header.Size {
+			return nil, errors.New("invalid tar entry data")
 		}
-		return readBinary(tarReader)
+		if header.Name == state.expected {
+			state.binary = data
+		}
 	}
-	return nil, errors.New("codex-switch was not found in the release archive")
+	padding, err := io.ReadAll(expanded)
+	if err != nil || expanded.N == 0 || compressed.Len() != 0 || len(bytes.Trim(padding, "\x00")) != 0 {
+		return nil, errors.New("invalid gzip trailer or trailing archive data")
+	}
+	return state.finish()
 }
 
 func readBinary(reader io.Reader) ([]byte, error) {
 	binary, err := io.ReadAll(io.LimitReader(reader, maxBinaryBytes+1))
 	if err != nil {
-		return nil, err
+		return nil, errors.New("unreadable release executable")
 	}
 	if len(binary) == 0 || len(binary) > maxBinaryBytes {
 		return nil, errors.New("release executable has an invalid size")

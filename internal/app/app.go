@@ -35,14 +35,15 @@ import (
 )
 
 type Options struct {
-	CodexHome string
-	AppHome   string
-	CodexBin  string
-	JSON      bool
-	Version   string
-	Input     io.Reader
-	Output    io.Writer
-	Error     io.Writer
+	CodexHome  string
+	AppHome    string
+	CodexBin   string
+	JSON       bool
+	Version    string
+	Provenance cliupdate.Provenance
+	Input      io.Reader
+	Output     io.Writer
+	Error      io.Writer
 
 	runtimeLoader func(bool) (runtimeState, error)
 	login         func(bool) (authschema.Document, error)
@@ -84,8 +85,11 @@ type usageView struct {
 
 const usageFreshness = 5 * time.Minute
 
-func NewCommand(version string) *cobra.Command {
+func NewCommand(version string, provenance ...cliupdate.Provenance) *cobra.Command {
 	options := &Options{Version: version, Input: os.Stdin, Output: os.Stdout, Error: os.Stderr}
+	if len(provenance) == 1 {
+		options.Provenance = provenance[0]
+	}
 	root := &cobra.Command{
 		Use:           "codex-switch",
 		Short:         "Securely switch ChatGPT accounts in one shared CODEX_HOME",
@@ -941,7 +945,7 @@ func newUpdateCommand(options *Options) *cobra.Command {
 		Use:   "update",
 		Short: "Securely update codex-switch from its latest GitHub release",
 		RunE: func(*cobra.Command, []string) error {
-			result, err := cliupdate.Run(context.Background(), options.Version, check)
+			result, err := cliupdate.Run(context.Background(), options.Version, check, options.Provenance)
 			if err != nil {
 				return err
 			}

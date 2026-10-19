@@ -252,6 +252,47 @@ usage view share a bounded allowlist grammar. Legacy cache messages outside that
 grammar are normalized on load and on the next save, without changing the JSON
 schema. Reading a cache does not rewrite its file.
 
+## Release and installation flow
+
+`main` passes version plus repository/channel linker stamps into the updater.
+The Go source defaults to development. GoReleaser OSS reads
+`CODEX_SWITCH_BUILD_CHANNEL` with `envOrDefault`, defaulting to development when
+absent. Only the trusted release workflow supplies `release` to its GoReleaser
+step; ordinary source builds, GoReleaser invocations, and snapshots without that
+marker remain development builds. These linker stamps are policy markers, not
+signatures. Version output and the update result's `installed`, `latest`, `current`, and `updated` keys are
+unchanged. The trusted release repository is an explicit constant, never derived
+from the Go module path or from release metadata.
+
+```text
+validate installed provenance (mutating update only)
+  -> bounded fork metadata, stable tag, exact origin and unique assets
+  -> bounded unique checksum manifest for the exact platform archive
+  -> bounded archive with exact size and SHA-256
+  -> validate every archive entry and recover one root executable
+  -> lock the independent executable target
+  -> validate target type, permissions, identity and content
+  -> stage/sync/atomically replace through the existing atomic writer
+```
+
+Before GoReleaser runs, `scripts/verify-release-source.sh` validates the stable
+tag, tag/HEAD agreement, and clean worktree, then explicitly fetches origin main
+and checks tag ancestry against the refreshed `refs/remotes/origin/main`. Any
+fetch or ancestry failure aborts publication. Checkout is bound to the fork by
+the workflow repository condition. Local regression tests use temporary Git
+repositories and local bare origins, with no network or production tags. This
+source check depends on repository/workflow control and required release-tag
+restrictions; it cannot independently prove review or authenticate a publisher.
+
+Tests inject a local TLS transport and replacement callback; production URL
+policy still evaluates the original GitHub URL before any connection. The tests
+never contact GitHub or replace the running executable. Install scripts delegate
+to `scripts/install.py`, which uses the same policy and Python's standard library,
+and installer tests use synthetic archives and temporary destinations. Windows
+wrapper execution and actual hosted release publication require separate platform
+verification. See `security.md` for the checksum/authenticity boundary and failure
+states.
+
 ## Data locations
 
 `CODEX_HOME` resolution:

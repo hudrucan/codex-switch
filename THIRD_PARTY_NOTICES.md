@@ -6,17 +6,9 @@ Release archives include the corresponding license texts under `LICENSES/`.
 
 | Modules | License |
 | --- | --- |
-| `github.com/minio/selfupdate`, `github.com/spf13/cobra`, `github.com/inconshreveable/mousetrap` | Apache-2.0 |
+| `github.com/spf13/cobra`, `github.com/inconshreveable/mousetrap` | Apache-2.0 |
 | `golang.org/x/crypto`, `golang.org/x/mod`, `golang.org/x/sys`, `golang.org/x/term`, `github.com/spf13/pflag` | BSD-3-Clause |
-| `aead.dev/minisign` | MIT |
 
-`github.com/minio/selfupdate` carries this upstream notice:
-
-> Copyright 2020 MinIO,Inc rewrites and modifications
->
-> Copyright 2015 Alan Shreve
-
-`aead.dev/minisign` is Copyright (c) 2021 Andreas Auernhammer.
 `github.com/spf13/pflag` is Copyright (c) 2012 Alex Ogier and the Go
 Authors. The `golang.org/x/*` modules are Copyright 2009 The Go Authors.
 

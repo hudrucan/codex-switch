@@ -4,7 +4,7 @@ project_name: codex-switch
 
 before:
   hooks:
-    - go mod tidy
+    - go mod verify
 
 builds:
   - id: codex-switch
@@ -12,6 +12,10 @@ builds:
     binary: codex-switch
     env:
       - CGO_ENABLED=0
+      - GOFLAGS=-mod=readonly
+      - GOTOOLCHAIN=local
+    flags:
+      - -trimpath
     goos:
       - darwin
       - linux
@@ -20,7 +24,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X main.version={{ .Version }}
+      - -s -w -buildid= -X main.version={{ .Version }} -X main.releaseRepository=hudrucan/codex-switch -X main.buildChannel={{ envOrDefault "CODEX_SWITCH_BUILD_CHANNEL" "development" }}
 
 archives:
   - id: default
@@ -52,5 +56,5 @@ changelog:
 
 release:
   github:
-    owner: SilkageNet
+    owner: hudrucan
     name: codex-switch

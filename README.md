@@ -36,10 +36,22 @@ malicious process already running as the same user.
 ## Install from source
 
 ```bash
-go install github.com/SilkageNet/codex-switch/cmd/codex-switch@latest
+git clone https://github.com/hudrucan/codex-switch.git
+cd codex-switch
+go build -trimpath ./cmd/codex-switch
 ```
 
-Release archives for macOS, Linux, and Windows are published on GitHub.
+This fork's binary release identity is `hudrucan/codex-switch`; the Go module
+path remains `github.com/SilkageNet/codex-switch`. Source/development builds
+refuse mutating self-update. `update --check` checks only the fork and does not
+prove that the current build is eligible for self-update.
+
+When a reviewed fork release is available, run `sh scripts/install.sh` or
+`./scripts/install.ps1` from that reviewed checkout. Both installers require
+Python 3.9+ and verify the same origin, asset, checksum, and archive policy.
+`CODEX_SWITCH_VERSION` selects a stable version (default: latest), and
+`CODEX_SWITCH_INSTALL_DIR` selects the destination. Missing fork releases fail
+closed; installers never fall back to upstream. See [distribution security](docs/security.md#binary-distribution-and-update-trust).
 
 Adding accounts and querying live usage require an official Codex CLI that this
 process can launch. On macOS, `codex-switch` checks `PATH` first and then the

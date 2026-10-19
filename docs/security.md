@@ -173,3 +173,92 @@ same operating-system user, which is inside this project's trust boundary.
 Linux sends values to `secret-tool` over standard input. Windows calls the
 native Credential Manager API directly. WSL invokes Windows PowerShell without
 a profile and uses current-user DPAPI plus a hashed registry value name.
+
+## Binary distribution and update trust
+
+The binary distribution trust root is the GitHub repository
+`hudrucan/codex-switch`, independently of the unchanged upstream Go module path.
+Source builds default to development provenance. GoReleaser OSS uses
+`envOrDefault` to keep ordinary builds and snapshots in development unless
+`CODEX_SWITCH_BUILD_CHANNEL` is explicitly supplied. The trusted release
+workflow supplies `release` only to its GoReleaser step. Mutating update
+requires a canonical stable installed version, the exact fork repository stamp,
+and the release channel stamp. A source build with a module-derived version still
+cannot self-update. Read-only `--check` queries the fork without claiming that
+the current executable is installable. There is no automatic upstream migration.
+No existing fork release or successful live installation is asserted by this
+hardening work; absent releases fail closed.
+
+Provenance stamps are build-policy markers, not signatures. A user who builds
+with arbitrary linker flags can forge them. Release publication and GitHub
+repository/workflow control are trusted, together with HTTPS certificate roots.
+Checksums from the same release detect corruption and bind the exact archive;
+they do not independently authenticate the publisher. The workflow creates
+GitHub attestations and SBOMs, but the updater does not verify attestations.
+Runtime attestation verification would need a separate trusted verifier and
+policy (such as a GitHub CLI/Sigstore dependency); it is deliberately not faked
+or replaced by a custom signing protocol.
+
+Only canonical stable `vMAJOR.MINOR.PATCH` releases are installable. Drafts,
+prereleases, duplicate JSON keys/assets/checksum records, empty artifacts, size
+disagreements, and foreign origins are rejected. Metadata is limited to 2 MiB,
+checksums to 1 MiB, archives to 128 MiB, and each executable to 64 MiB. Archive
+entries are limited to 256 with 128 MiB total file data. Only a root executable
+and the release's license/README/notice files are allowed. Paths, duplicates,
+links, special entries, and extended tar headers cannot select an executable.
+Tar input is restricted to USTAR, as emitted for the short paths in this release
+configuration; GNU/PAX extensions are not interpreted as an alternate selector.
+The entire archive is checked, including entries after the executable.
+
+HTTP clients send no credentials, cookies, or inherited proxy authentication.
+Initial requests use the exact fork API/download URLs. Metadata redirects are
+rejected. A download may redirect once from its fork GitHub URL to HTTPS on
+`release-assets.githubusercontent.com`, under the official release-asset path;
+arbitrary hosts, ports, userinfo, and subsequent redirects are rejected. This host
+is documented in GitHub's [runner network requirements](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+New GitHub download hosts require policy review rather than automatic trust.
+Remote bodies and local filesystem failures are not echoed as diagnostics.
+
+Verification finishes before any executable write. The old self-update library
+used predictable `.new`/`.old` paths, truncated a pre-existing temporary path,
+did not sync its staged file, and moved the old executable away before publishing
+the new one. The updater now uses the existing P1 atomic writer: random exclusive
+temporary files, file sync, one platform replacement, and directory durability.
+
+The target must be a regular, non-symlink file with a canonical parent path;
+setuid/setgid targets are rejected. A separate `<executable>.update.lock` guards
+updates and installation, without accessing any account/vault state. Existing
+permissions and compare-before-replace checks are retained. Windows may refuse
+replacement of a running executable: failure retains the old path, with no
+rename-away fallback. Post-replacement durability errors report uncertainty;
+they do not delete the published executable. Same-user filesystem races and
+hardware durability remain platform trust assumptions.
+
+Shell and PowerShell installers invoke a single standard-library Python 3.9+
+verifier from the same reviewed checkout. This explicit installer prerequisite
+replaces fragile shell JSON/checksum parsing and keeps the two platforms on one
+validation policy; it adds no Go or CLI runtime dependency. Missing Python fails
+before download. Installers extract only verified bytes into a random temporary
+file beside the destination, never run archive content, and atomically replace
+after validation. Symlink destinations and uncertain concurrent changes fail
+closed. They do not request elevation automatically.
+
+Release builds verify module integrity and clean, tag-matching source instead of
+running `go mod tidy`. Before building, the workflow explicitly fetches
+`refs/heads/main` from checkout's `origin` into `refs/remotes/origin/main` and
+requires the tag commit to be its ancestor. A failed fetch, missing branch, or
+unreachable commit aborts the release, even if a stale local reference exists.
+This verifies source reachability in freshly fetched main history; it does not
+prove that a human reviewed a commit. GitHub repository and workflow control
+remain the trust root. Repository administrators must protect main with review
+requirements and restrict creation, movement, and deletion of `v*` release tags
+to authorized release actors. Those repository-side controls are operational
+requirements, not settings enforced or changed by this source patch.
+
+Linker metadata is deterministic; builds without the explicit workflow marker
+remain development builds. Direct GitHub Actions are pinned to public commits
+resolved during this audit; tool versions are explicit and Dependabot already monitors Go and
+Actions weekly. Pins reduce mutable-reference exposure, but hosted runners,
+action transitive code/downloaders, Go's checksum infrastructure, and GitHub
+release control remain trusted. Builds are not claimed to be fully hermetic or
+independently reproducible. No release is performed by local tests.

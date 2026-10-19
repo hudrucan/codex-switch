@@ -73,49 +73,58 @@ func TestDuplicateAlias(t *testing.T) {
 	}
 }
 
-func TestFindByIDDoesNotResolveCollidingAlias(t *testing.T) {
-	data := Data{Profiles: []Profile{
-		{ID: "other-id", Alias: "TARGET-ID"},
-		{ID: "target-id", Alias: "work"},
-	}}
-	profile, err := data.FindByID("target-id")
-	if err != nil || profile.ID != "target-id" {
-		t.Fatal("internal ID lookup was redirected by an alias")
-	}
-	alias, err := data.Find("target-id")
-	if err != nil || alias.ID != "other-id" {
-		t.Fatal("user-facing case-insensitive alias lookup changed")
-	}
-	for _, value := range []string{"work", "TARGET-ID", "missing"} {
-		if _, err := data.FindByID(value); err == nil {
-			t.Fatal("internal ID lookup accepted an alias or inexact ID")
+// Namespace semantics live here; callers only need to prove which lookup they use.
+func TestProfileLookupNamespaces(t *testing.T) {
+	target := Profile{ID: "target-id", Alias: "work"}
+	for _, collidingAlias := range []string{"target-id", "TARGET-ID"} {
+		other := Profile{ID: "other-id", Alias: collidingAlias}
+		for _, aliasFirst := range []bool{false, true} {
+			order := "id-first"
+			data := Data{Profiles: []Profile{target, other}}
+			if aliasFirst {
+				order = "alias-first"
+				data.Profiles = []Profile{other, target}
+			}
+			firstMatch := data.Profiles[0].ID
+			cases := []struct {
+				name             string
+				lookup           func(*Data, string) (*Profile, error)
+				selector, wantID string
+			}{
+				{"selector/collision", (*Data).Find, "target-id", firstMatch},
+				{"selector/folded-alias", (*Data).Find, "TARGET-ID", other.ID},
+				{"selector/alias", (*Data).Find, "work", target.ID},
+				{"selector/folded-work", (*Data).Find, "WORK", target.ID},
+				{"selector/id", (*Data).Find, "other-id", other.ID},
+				{"selector/inexact-id", (*Data).Find, "OTHER-ID", ""},
+				{"selector/missing", (*Data).Find, "missing", ""},
+				{"id/collision", (*Data).FindByID, "target-id", target.ID},
+				{"id/inexact", (*Data).FindByID, "TARGET-ID", ""},
+				{"id/alias", (*Data).FindByID, "work", ""},
+				{"id/other", (*Data).FindByID, "other-id", other.ID},
+				{"id/missing", (*Data).FindByID, "missing", ""},
+				{"alias/collision", (*Data).FindByAlias, "target-id", other.ID},
+				{"alias/folded", (*Data).FindByAlias, "TARGET-ID", other.ID},
+				{"alias/work", (*Data).FindByAlias, "work", target.ID},
+				{"alias/folded-work", (*Data).FindByAlias, "WORK", target.ID},
+				{"alias/id", (*Data).FindByAlias, "other-id", ""},
+				{"alias/missing", (*Data).FindByAlias, "missing", ""},
+			}
+			for _, tc := range cases {
+				t.Run(collidingAlias+"/"+order+"/"+tc.name, func(t *testing.T) {
+					profile, err := tc.lookup(&data, tc.selector)
+					if tc.wantID == "" {
+						if err == nil || profile != nil {
+							t.Fatal("lookup accepted the wrong namespace or casing")
+						}
+						return
+					}
+					if err != nil || profile.ID != tc.wantID {
+						t.Fatal("lookup changed namespace or selector ordering")
+					}
+				})
+			}
 		}
-	}
-}
-
-func TestFindByAliasDoesNotResolveCollidingID(t *testing.T) {
-	data := Data{Profiles: []Profile{
-		{ID: "created", Alias: "existing"},
-		{ID: "new-profile-id", Alias: "created"},
-	}}
-	for _, alias := range []string{"created", "CREATED"} {
-		profile, err := data.FindByAlias(alias)
-		if err != nil || profile.ID != "new-profile-id" {
-			t.Fatal("alias-only lookup returned another profile by ID")
-		}
-	}
-	if _, err := data.FindByAlias("new-profile-id"); err == nil {
-		t.Fatal("alias-only lookup accepted a profile ID")
-	}
-	for selector, expected := range map[string]string{"created": "created", "EXISTING": "created", "new-profile-id": "new-profile-id"} {
-		profile, err := data.Find(selector)
-		if err != nil || profile.ID != expected {
-			t.Fatal("normal user-facing alias/ID selector behavior changed")
-		}
-	}
-	profile, err := data.FindByID("created")
-	if err != nil || profile.Alias != "existing" {
-		t.Fatal("exact-ID lookup changed after adding alias-only lookup")
 	}
 }
 

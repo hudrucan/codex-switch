@@ -47,14 +47,21 @@ func corruptUsageAuxiliary(t *testing.T, runtime runtimeState, fault string) {
 func usageCLICommand(options *Options, name string, cached bool) *cobra.Command {
 	command := newAccountListCommand(options)
 	args := []string{"--refresh"}
-	if name == "usage" {
+	if name == "usage" || name == "usage-all" {
 		command = newAccountUsageCommand(options)
 		args = []string{"a"}
+		if name == "usage-all" {
+			args = []string{"--all"}
+		}
 	}
 	if cached {
 		args = []string{"--cached"}
-		if name == "usage" {
-			args = append([]string{"a"}, args...)
+		if name == "usage" || name == "usage-all" {
+			selector := "a"
+			if name == "usage-all" {
+				selector = "--all"
+			}
+			args = append([]string{selector}, args...)
 		}
 	}
 	command.SetArgs(args)
@@ -63,156 +70,173 @@ func usageCLICommand(options *Options, name string, cached bool) *cobra.Command 
 }
 
 func TestExplicitCLIRefreshPersistsCredentialsDespiteAuxiliaryFailures(t *testing.T) {
-	for _, name := range []string{"list", "usage"} {
-		for _, fault := range []string{"none", "cache", "state", "live-auth", "combined"} {
-			for _, queryFails := range []bool{false, true} {
-				outcome := "success"
-				if queryFails {
-					outcome = "failed-query"
-				}
-				t.Run(name+"/"+fault+"/"+outcome, func(t *testing.T) {
-					runtime := prepareInteractiveRuntime(t)
-					original, err := runtime.manager.Load()
-					if err != nil {
-						t.Fatal(err)
-					}
-					active, err := original.Find("a")
-					if err != nil {
-						t.Fatal(err)
-					}
-					liveHash, err := runtime.home.AuthHash()
-					if err != nil {
-						t.Fatal(err)
-					}
-					if err := appstate.Save(runtime.paths.State, appstate.State{ActiveProfileID: active.ID, AuthHash: liveHash}); err != nil {
-						t.Fatal(err)
-					}
-					corruptUsageAuxiliary(t, runtime, fault)
-					liveBefore, err := runtime.home.AuthHash()
-					if err != nil {
-						t.Fatal(err)
-					}
-					stateBefore, err := atomicfile.FileHash(runtime.paths.State)
-					if err != nil {
-						t.Fatal(err)
-					}
-					queried := map[string]int{}
-					runtime.usageRunner = cliUsageQuery(func(_ context.Context, raw json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
-						document, err := authschema.Parse(raw)
-						if err != nil {
-							t.Fatal("CLI queried invalid credentials instead of the vault profile")
-						}
-						account := document.Tokens.AccountID
-						queried[account]++
-						fresh := refreshedCLIAuth(account)
-						if queryFails {
-							return codexusage.Snapshot{}, fresh, errors.New(integrationCanary)
-						}
-						return codexusage.Snapshot{FetchedAt: time.Now().UTC(), PlanType: "pro"}, fresh, nil
-					})
-					options := lockingOptions(runtime)
-					var output bytes.Buffer
-					options.JSON, options.Output = true, &output
-					commandErr := usageCLICommand(options, name, false).Execute()
-					if fault != "none" && commandErr == nil {
-						t.Fatal("auxiliary corruption was silently treated as success")
-					}
-					if fault == "none" && !queryFails && (commandErr != nil || !json.Valid(output.Bytes())) {
-						t.Fatal("successful CLI refresh changed its JSON behavior")
-					}
-					if strings.Contains(output.String(), integrationCanary) || (commandErr != nil && strings.Contains(commandErr.Error(), integrationCanary)) {
-						t.Fatal("CLI exposed sensitive diagnostics")
-					}
-					if fault != "none" && output.Len() != 0 {
-						t.Fatal("CLI rendered active identity from invalid auxiliary state")
-					}
-					loaded, err := runtime.manager.Load()
-					if err != nil {
-						t.Fatal(err)
-					}
-					for _, before := range original.Profiles {
-						after, err := loaded.FindByID(before.ID)
-						if err != nil {
-							t.Fatal(err)
-						}
-						selected := name == "list" || before.Alias == "a"
-						if !selected {
-							if queried[before.AccountID] != 0 || !bytes.Equal(before.Auth, after.Auth) {
-								t.Fatal("CLI refreshed an unrelated profile")
-							}
-							continue
-						}
-						if queried[before.AccountID] == 0 || !bytes.Equal(after.Auth, refreshedCLIAuth(before.AccountID)) {
-							t.Fatal("auxiliary failure prevented persistence of a validated refresh")
-						}
-					}
-					if fault == "state" || fault == "live-auth" || fault == "combined" {
-						liveAfter, liveErr := runtime.home.AuthHash()
-						stateAfter, stateErr := atomicfile.FileHash(runtime.paths.State)
-						if liveErr != nil || stateErr != nil || liveAfter != liveBefore || stateAfter != stateBefore {
-							t.Fatal("uncertain active state permitted a live projection or state write")
-						}
-					} else {
-						raw, err := runtime.home.ReadAuth()
-						if err != nil || !bytes.Equal(bytes.TrimSpace(raw), refreshedCLIAuth(active.AccountID)) {
-							t.Fatal("safe active projection was not preserved")
-						}
-					}
-					if fault != "cache" && fault != "combined" {
-						raw, err := os.ReadFile(runtime.paths.UsageCache)
-						if err != nil || strings.Contains(string(raw), integrationCanary) {
-							t.Fatal("CLI persisted sensitive diagnostics in the usage cache")
-						}
-					}
-				})
+	// Retry, identity, and auxiliary fault matrices belong to accountusage.
+	// These cases own command routing, public output, and selected profiles.
+	cases := []struct {
+		name, command, fault string
+		queryFails           bool
+	}{
+		{"list-success", "list", "none", false},
+		{"list-query-failure", "list", "none", true},
+		{"alias-success", "usage", "none", false},
+		{"alias-query-failure", "usage", "none", true},
+		{"all-success", "usage-all", "none", false},
+		{"list-cache-failure", "list", "cache", true},
+		{"alias-cache-failure", "usage", "cache", true},
+		{"list-state-failure", "list", "state", true},
+		{"alias-state-failure", "usage", "state", false},
+		{"list-live-auth-failure", "list", "live-auth", false},
+		{"alias-live-auth-failure", "usage", "live-auth", true},
+		{"all-combined-failure", "usage-all", "combined", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, fault, queryFails := tc.command, tc.fault, tc.queryFails
+			runtime := prepareInteractiveRuntime(t)
+			original, err := runtime.manager.Load()
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			active, err := original.Find("a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			liveHash, err := runtime.home.AuthHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := appstate.Save(runtime.paths.State, appstate.State{ActiveProfileID: active.ID, AuthHash: liveHash}); err != nil {
+				t.Fatal(err)
+			}
+			corruptUsageAuxiliary(t, runtime, fault)
+			liveBefore, err := runtime.home.AuthHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			stateBefore, err := atomicfile.FileHash(runtime.paths.State)
+			if err != nil {
+				t.Fatal(err)
+			}
+			queried := map[string]int{}
+			runtime.usageRunner = cliUsageQuery(func(_ context.Context, raw json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
+				document, err := authschema.Parse(raw)
+				if err != nil {
+					t.Fatal("CLI queried invalid credentials instead of the vault profile")
+				}
+				account := document.Tokens.AccountID
+				queried[account]++
+				fresh := refreshedCLIAuth(account)
+				if queryFails {
+					return codexusage.Snapshot{}, fresh, errors.New(integrationCanary)
+				}
+				return codexusage.Snapshot{FetchedAt: time.Now().UTC(), PlanType: "pro"}, fresh, nil
+			})
+			options := lockingOptions(runtime)
+			var output bytes.Buffer
+			options.JSON, options.Output = true, &output
+			commandErr := usageCLICommand(options, name, false).Execute()
+			if fault != "none" && commandErr == nil {
+				t.Fatal("auxiliary corruption was silently treated as success")
+			}
+			if fault == "none" && !queryFails && (commandErr != nil || !json.Valid(output.Bytes())) {
+				t.Fatal("successful CLI refresh changed its JSON behavior")
+			}
+			if strings.Contains(output.String(), integrationCanary) || (commandErr != nil && strings.Contains(commandErr.Error(), integrationCanary)) {
+				t.Fatal("CLI exposed sensitive diagnostics")
+			}
+			if fault != "none" && output.Len() != 0 {
+				t.Fatal("CLI rendered active identity from invalid auxiliary state")
+			}
+			loaded, err := runtime.manager.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, before := range original.Profiles {
+				after, err := loaded.FindByID(before.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selected := name != "usage" || before.Alias == "a"
+				if !selected {
+					if queried[before.AccountID] != 0 || !bytes.Equal(before.Auth, after.Auth) {
+						t.Fatal("CLI refreshed an unrelated profile")
+					}
+					continue
+				}
+				if queried[before.AccountID] == 0 || !bytes.Equal(after.Auth, refreshedCLIAuth(before.AccountID)) {
+					t.Fatal("auxiliary failure prevented persistence of a validated refresh")
+				}
+			}
+			if fault == "state" || fault == "live-auth" || fault == "combined" {
+				liveAfter, liveErr := runtime.home.AuthHash()
+				stateAfter, stateErr := atomicfile.FileHash(runtime.paths.State)
+				if liveErr != nil || stateErr != nil || liveAfter != liveBefore || stateAfter != stateBefore {
+					t.Fatal("uncertain active state permitted a live projection or state write")
+				}
+			} else {
+				raw, err := runtime.home.ReadAuth()
+				if err != nil || !bytes.Equal(bytes.TrimSpace(raw), refreshedCLIAuth(active.AccountID)) {
+					t.Fatal("safe active projection was not preserved")
+				}
+			}
+			if fault != "cache" && fault != "combined" {
+				raw, err := os.ReadFile(runtime.paths.UsageCache)
+				if err != nil || strings.Contains(string(raw), integrationCanary) {
+					t.Fatal("CLI persisted sensitive diagnostics in the usage cache")
+				}
+			}
+		})
 	}
 }
 
 func TestCachedCLIAndImplicitSelectionNeverRefreshInvalidAuxiliaryState(t *testing.T) {
-	for _, fault := range []string{"cache", "state", "live-auth", "combined"} {
-		for _, name := range []string{"list", "usage", "implicit-usage"} {
-			if name == "implicit-usage" && fault == "cache" {
-				continue // A valid live identity can still select an implicit refresh.
-			}
-			t.Run(name+"/"+fault, func(t *testing.T) {
-				runtime := prepareInteractiveRuntime(t)
-				corruptUsageAuxiliary(t, runtime, fault)
-				calls := 0
-				runtime.usageRunner = cliUsageQuery(func(context.Context, json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
-					calls++
-					return codexusage.Snapshot{}, nil, errors.New(integrationCanary)
-				})
-				before := map[string]string{}
-				for _, path := range []string{runtime.paths.Vault, runtime.paths.State, runtime.paths.UsageCache, runtime.home.AuthPath} {
-					hash, err := atomicfile.FileHash(path)
-					if err != nil {
-						t.Fatal(err)
-					}
-					before[path] = hash
-				}
-				options := lockingOptions(runtime)
-				command := usageCLICommand(options, name, true)
-				if name == "implicit-usage" {
-					command = newAccountUsageCommand(options)
-					command.SetArgs(nil)
-					command.SilenceErrors, command.SilenceUsage = true, true
-				}
-				if err := command.Execute(); err == nil || strings.Contains(err.Error(), integrationCanary) {
-					t.Fatal("invalid auxiliary state was accepted or exposed")
-				}
-				if calls != 0 {
-					t.Fatal("cached read or uncertain implicit selection contacted a usage runner")
-				}
-				for path, hash := range before {
-					actual, err := atomicfile.FileHash(path)
-					if err != nil || actual != hash {
-						t.Fatal("offline or invalid implicit selection mutated persistent data")
-					}
-				}
+	cases := []struct{ command, fault string }{
+		{"list", "cache"},
+		{"usage", "cache"},
+		{"usage", "state"},
+		{"list", "live-auth"},
+		{"usage-all", "combined"},
+		{"implicit-usage", "state"},
+		{"implicit-usage", "live-auth"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.command+"/"+tc.fault, func(t *testing.T) {
+			name, fault := tc.command, tc.fault
+			runtime := prepareInteractiveRuntime(t)
+			corruptUsageAuxiliary(t, runtime, fault)
+			calls := 0
+			runtime.usageRunner = cliUsageQuery(func(context.Context, json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
+				calls++
+				return codexusage.Snapshot{}, nil, errors.New(integrationCanary)
 			})
-		}
+			before := map[string]string{}
+			for _, path := range []string{runtime.paths.Vault, runtime.paths.State, runtime.paths.UsageCache, runtime.home.AuthPath} {
+				hash, err := atomicfile.FileHash(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[path] = hash
+			}
+			options := lockingOptions(runtime)
+			command := usageCLICommand(options, name, true)
+			if name == "implicit-usage" {
+				command = newAccountUsageCommand(options)
+				command.SetArgs(nil)
+				command.SilenceErrors, command.SilenceUsage = true, true
+			}
+			if err := command.Execute(); err == nil || strings.Contains(err.Error(), integrationCanary) {
+				t.Fatal("invalid auxiliary state was accepted or exposed")
+			}
+			if calls != 0 {
+				t.Fatal("cached read or uncertain implicit selection contacted a usage runner")
+			}
+			for path, hash := range before {
+				actual, err := atomicfile.FileHash(path)
+				if err != nil || actual != hash {
+					t.Fatal("offline or invalid implicit selection mutated persistent data")
+				}
+			}
+		})
 	}
 }
 

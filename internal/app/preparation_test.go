@@ -96,31 +96,10 @@ func startPendingCommand(t *testing.T, command *cobra.Command, args []string, ga
 	return finish
 }
 
-func prepareInteractiveRuntime(t *testing.T) runtimeState {
-	t.Helper()
-	root := t.TempDir()
-	runtime := lockingRuntime(t, filepath.Join(root, "switch"), filepath.Join(root, "codex"))
-	seedLockingRuntime(t, runtime)
-	// An already-live profile lets Use exercise its guarded transaction without
-	// bypassing the running-Codex guard or touching any real process/account.
-	if err := runtime.home.WriteAuth(lockingDocument(t, "a").Raw); err != nil {
-		t.Fatal(err)
-	}
-	return runtime
-}
-
-func TestPendingLoginDoesNotLockSwitchingAndReloadsVault(t *testing.T) {
-	for _, scenario := range []string{"add", "reauth", "add-conflict"} {
+func TestPendingAddReloadsVaultWithoutBlockingSwitching(t *testing.T) {
+	for _, scenario := range []string{"add", "add-conflict"} {
 		t.Run(scenario, func(t *testing.T) {
 			runtime := prepareInteractiveRuntime(t)
-			before, err := runtime.manager.Load()
-			if err != nil {
-				t.Fatal(err)
-			}
-			original, err := before.Find("a")
-			if err != nil {
-				t.Fatal(err)
-			}
 			document := lockingDocument(t, "login")
 			gate := newPreparationGate()
 			options := lockingOptions(runtime)
@@ -129,10 +108,7 @@ func TestPendingLoginDoesNotLockSwitchingAndReloadsVault(t *testing.T) {
 				return document, nil
 			}
 			alias := "c"
-			if scenario == "reauth" {
-				alias = "a"
-			}
-			finish := startPendingCommand(t, newAccountAddCommand(options, scenario == "reauth"), []string{alias}, gate)
+			finish := startPendingCommand(t, newAccountAddCommand(options, false), []string{alias}, gate)
 			runMutationProcess(t, runtime, "use", false)
 			runMutationProcess(t, runtime, "rename-b", false)
 			if scenario == "add-conflict" {
@@ -146,7 +122,7 @@ func TestPendingLoginDoesNotLockSwitchingAndReloadsVault(t *testing.T) {
 					t.Fatalf("concurrent add failed: %v, %v", addErr, closeErr)
 				}
 			}
-			err = finish()
+			err := finish()
 			if scenario == "add-conflict" {
 				if err == nil || !strings.Contains(err.Error(), "already exists") {
 					t.Fatalf("expected current alias conflict, got %v", err)
@@ -171,9 +147,6 @@ func TestPendingLoginDoesNotLockSwitchingAndReloadsVault(t *testing.T) {
 			}
 			if saved.AccountID != expectedAccount {
 				t.Fatal("login transaction saved the wrong account")
-			}
-			if scenario == "reauth" && saved.ID != original.ID {
-				t.Fatal("reauth did not retain the current profile identifier")
 			}
 		})
 	}

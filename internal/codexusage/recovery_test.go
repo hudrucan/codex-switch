@@ -64,11 +64,19 @@ func assertChildCleaned(t *testing.T, child *exec.Cmd) {
 	t.Fatal("isolated home was not configured")
 }
 
-func TestRunnerRecoversRefreshOnEveryProtocolFailure(t *testing.T) {
+func TestRunnerRecoversRefreshAfterQueryFailure(t *testing.T) {
 	original := workspaceAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z", "workspace-a")
 	candidate := workspaceAuth("account-a", "refresh-new", "2026-08-20T01:00:00Z", "workspace-a")
-	for _, mode := range []string{"crash", "rpc", "partial"} {
-		for _, method := range []string{"initialize", "account/read", "account/rateLimits/read", "account/usage/read"} {
+	for _, mode := range []string{"crash", "rpc", "partial", "bad-result", "wait-crash"} {
+		methods := []string{"initialize", "account/read", "account/rateLimits/read", "account/usage/read"}
+		if mode == "bad-result" {
+			methods = methods[1:]
+		}
+		// Exit after stdin closes has no method-specific behavior.
+		if mode == "wait-crash" {
+			methods = []string{"account/usage/read"}
+		}
+		for _, method := range methods {
 			t.Run(mode+"/"+method, func(t *testing.T) {
 				runner, child, _ := failureRunner(t, mode, method, candidate)
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -86,27 +94,6 @@ func TestRunnerRecoversRefreshOnEveryProtocolFailure(t *testing.T) {
 				document, parseErr := authschema.Parse(updated)
 				if parseErr != nil || document.Tokens.RefreshToken != "refresh-new" {
 					t.Fatal("refresh was lost on a failed query")
-				}
-				assertChildCleaned(t, *child)
-			})
-		}
-	}
-}
-
-func TestRunnerRecoversFinalAuthAfterExitAndDecodeFailures(t *testing.T) {
-	for _, mode := range []string{"wait-crash", "bad-result"} {
-		for _, method := range []string{"account/read", "account/rateLimits/read", "account/usage/read"} {
-			t.Run(mode+"/"+method, func(t *testing.T) {
-				runner, child, _ := failureRunner(t, mode, method, testAuth("account-a", "refresh-new", "2026-08-20T01:00:00Z"))
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				_, updated, err := runner.Query(ctx, testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
-				if err == nil || strings.Contains(err.Error(), rpcCanary) {
-					t.Fatal("failure was lost or exposed a secret")
-				}
-				document, parseErr := authschema.Parse(updated)
-				if parseErr != nil || document.Tokens.RefreshToken != "refresh-new" {
-					t.Fatal("final credentials were not recovered")
 				}
 				assertChildCleaned(t, *child)
 			})

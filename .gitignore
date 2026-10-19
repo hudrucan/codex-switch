@@ -17,3 +17,4 @@ coverage.out
 *.enc
 auth.json
 .env
+.claude/auto-context.md

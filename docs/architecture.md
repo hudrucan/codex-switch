@@ -56,6 +56,39 @@ acquired. This avoids nested acquisition during runtime setup. Read-only
 observation and backup export do not mutate the vault and do not acquire the
 operation lock.
 
+### Profile lookup audit
+
+Internal profile IDs are exact, case-sensitive identifiers. An alias may legally
+equal another profile's ID, including a case-insensitive match; alias ordering
+must never affect internal resolution. The production lookup sites are classified
+below. `Find` retains its existing user-facing alias/ID behavior; `FindByID` has no
+alias fallback. `FindByAlias` resolves only the case-insensitive alias namespace.
+After successful `Add(profile, false)`, aliases are unique and this alias-only
+lookup retrieves the newly created profile, never an existing profile by ID.
+
+| Production site | Lookup input | Classification and resolution |
+| --- | --- | --- |
+| `app.newAccountUsageCommand`, explicit selector | `args[0]` | User alias; retain `Find` |
+| `app.newAccountShowCommand` | `args[0]` | User alias; retain `Find` |
+| `app.newAccountRenameCommand`, current alias | `args[0]` | User alias; retain `Find` |
+| `app.newAccountRenameCommand`, conflict check | `args[1]` | Proposed user alias; retain `Find` |
+| `app.newAccountRemoveCommand` | `args[0]` | User alias; retain `Find` |
+| `app.addDocument`, after `Add` | `alias` | Identity of the newly created profile by its unique alias; `FindByAlias` |
+| `switcher.Service.Use`, target | `alias` | User switch target; retain `Find` |
+| `switcher.Service.Sync`, after `Add` | `options.Alias` | Identity of the newly imported profile by its unique alias; `FindByAlias` |
+| `app.newAccountUsageCommand`, implicit selector | `activeProfileID` | Observed internal ID; `FindByID` |
+| `accountusage.Service.Refresh`, selection | `id` from `profileIDs` | Internal ID; `FindByID` |
+| `accountusage.Service.Refresh`, persistence | `profileID` from query results | Internal ID; `FindByID` |
+| `switcher.observationWithoutLive` | `state.ActiveProfileID` | Persisted internal ID; `FindByID` |
+| `switcher.observeLive` | `state.ActiveProfileID` | Persisted internal ID; `FindByID` |
+| `switcher.Service.Use`, live reconciliation | `snapshot.observation.ProfileID` | Observed internal ID; `FindByID` |
+| `switcher.Service.Sync`, managed reconciliation | `snapshot.observation.ProfileID` | Observed internal ID; `FindByID` |
+
+Recovery copies `Journal.TargetProfileID` into recorded state after hash checks;
+it does not perform a name lookup. Subsequent observation resolves that state
+with `FindByID`. Reauthentication checks its captured ID and alias explicitly.
+A missing recorded ID does not acquire an alias from another profile.
+
 All concurrent writers must use this locking protocol; older binaries that omit
 vault locking must not run mutations concurrently with the updated CLI.
 
@@ -161,7 +194,9 @@ acquire shared operation lock
   -> initialize the official Codex App Server
   -> read account/read, account/rateLimits/read, and account/usage/read in order
   -> retain quota reset times and any earned-reset count and expiration metadata
-  -> stop the server and delete the temporary home
+  -> stop and reap the server on every exit path after startup
+  -> recover and validate its final authentication file
+  -> delete the temporary home
   -> reconcile any newer credential generation, including one produced by a failed query
   -> atomically save credential-free usage snapshots
 ```
@@ -173,6 +208,49 @@ projection from a concurrent Codex write. Transient failures are retried with
 backoff using the newest validated credential generation returned by the prior
 attempt. Multi-account refreshes are intentionally sequential so independent
 App Server processes do not compete for startup or authentication resources.
+
+All returns after App Server startup share one cleanup/recovery path. Cancellation
+closes protocol pipes and terminates the child; its exit is reaped before reading
+the final authentication file. Only a regular file within the temporary home is
+read, with the existing authentication size limit. Schema, account, known
+workspace, and generation checks run even when initialization, RPC, decoding,
+process exit, or cancellation failed. A known workspace must not disappear or
+change. An unknown original workspace may become known; generation ordering
+itself is unchanged. Older or ambiguous generations are rejected. A recovered
+candidate accompanies the original operation failure and never makes failed
+usage retrieval successful. Existing explicitly marked partial usage results
+remain supported when one usage method succeeds.
+
+Retry inputs advance only after validation against the most recently accepted
+document. Failed attempts cannot replace that document with older, conflicting,
+or malformed credentials. Cancellation in backoff or before another attempt
+returns the already validated candidate. Under the P0 operation lock, credential
+reconciliation and vault persistence precede cache loading/writing. Invalid
+auxiliary state prevents uncertain live-file projection, but does not discard a
+validated vault update. Compare-before-replace still protects active auth, and
+P1 atomic-write/key handling is unchanged.
+
+Within usage refresh, internal profile identifiers use exact-ID lookup during
+selection and again after vault reload for persistence. They never fall back to
+the alias namespace, even when an alias legally equals another profile ID.
+The CLI still resolves explicit user aliases with its existing lookup rules;
+implicit active usage selection resolves the observed profile ID exactly.
+
+An explicit list refresh defers observation and cache preflight until after the
+refresh service has reconciled credentials. Explicit usage selectors (alias or
+`--all`) may proceed from validated vault profiles when observation fails.
+Usage without a selector still requires a valid live observation, and cached
+commands never invoke the runner. Auxiliary corruption is reported, not repaired
+or interpreted as an active identity; a command can therefore fail after safely
+persisting refreshed credentials. Post-refresh observation errors are redacted.
+
+RPC error messages/data and stderr are not used as public diagnostics. Errors
+expose fixed operation/method names, bounded numeric RPC codes, and fixed failure
+classifications; context and original-error identity remain testable with
+`errors.Is`. Error formatting, retries, cache failure messages, and the final CLI
+usage view share a bounded allowlist grammar. Legacy cache messages outside that
+grammar are normalized on load and on the next save, without changing the JSON
+schema. Reading a cache does not rewrite its file.
 
 ## Data locations
 

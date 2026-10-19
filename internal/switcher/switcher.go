@@ -69,7 +69,7 @@ func (service Service) Use(alias string, allowRunning bool) (Result, error) {
 		if !snapshot.observation.Managed {
 			return Result{}, errors.New("the active Codex login is not managed; preserve it with 'codex-switch sync --as <alias>' before switching")
 		}
-		currentProfile, findErr := snapshot.data.Find(snapshot.observation.ProfileID)
+		currentProfile, findErr := snapshot.data.FindByID(snapshot.observation.ProfileID)
 		if findErr != nil {
 			return Result{}, findErr
 		}

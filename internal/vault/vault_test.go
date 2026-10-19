@@ -73,6 +73,52 @@ func TestDuplicateAlias(t *testing.T) {
 	}
 }
 
+func TestFindByIDDoesNotResolveCollidingAlias(t *testing.T) {
+	data := Data{Profiles: []Profile{
+		{ID: "other-id", Alias: "TARGET-ID"},
+		{ID: "target-id", Alias: "work"},
+	}}
+	profile, err := data.FindByID("target-id")
+	if err != nil || profile.ID != "target-id" {
+		t.Fatal("internal ID lookup was redirected by an alias")
+	}
+	alias, err := data.Find("target-id")
+	if err != nil || alias.ID != "other-id" {
+		t.Fatal("user-facing case-insensitive alias lookup changed")
+	}
+	for _, value := range []string{"work", "TARGET-ID", "missing"} {
+		if _, err := data.FindByID(value); err == nil {
+			t.Fatal("internal ID lookup accepted an alias or inexact ID")
+		}
+	}
+}
+
+func TestFindByAliasDoesNotResolveCollidingID(t *testing.T) {
+	data := Data{Profiles: []Profile{
+		{ID: "created", Alias: "existing"},
+		{ID: "new-profile-id", Alias: "created"},
+	}}
+	for _, alias := range []string{"created", "CREATED"} {
+		profile, err := data.FindByAlias(alias)
+		if err != nil || profile.ID != "new-profile-id" {
+			t.Fatal("alias-only lookup returned another profile by ID")
+		}
+	}
+	if _, err := data.FindByAlias("new-profile-id"); err == nil {
+		t.Fatal("alias-only lookup accepted a profile ID")
+	}
+	for selector, expected := range map[string]string{"created": "created", "EXISTING": "created", "new-profile-id": "new-profile-id"} {
+		profile, err := data.Find(selector)
+		if err != nil || profile.ID != expected {
+			t.Fatal("normal user-facing alias/ID selector behavior changed")
+		}
+	}
+	profile, err := data.FindByID("created")
+	if err != nil || profile.Alias != "existing" {
+		t.Fatal("exact-ID lookup changed after adding alias-only lookup")
+	}
+}
+
 func TestValidateAlias(t *testing.T) {
 	for _, alias := range []string{"", " work", "work\n"} {
 		if err := ValidateAlias(alias); err == nil {

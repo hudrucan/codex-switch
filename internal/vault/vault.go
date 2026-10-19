@@ -243,6 +243,26 @@ func (data *Data) Find(aliasOrID string) (*Profile, error) {
 	return nil, fmt.Errorf("account profile %q not found", aliasOrID)
 }
 
+// FindByID resolves an internal identifier without interpreting it as an alias.
+func (data *Data) FindByID(id string) (*Profile, error) {
+	for index := range data.Profiles {
+		if data.Profiles[index].ID == id {
+			return &data.Profiles[index], nil
+		}
+	}
+	return nil, errors.New("account profile ID not found")
+}
+
+// FindByAlias resolves an alias without interpreting it as a profile ID.
+func (data *Data) FindByAlias(alias string) (*Profile, error) {
+	for index := range data.Profiles {
+		if strings.EqualFold(data.Profiles[index].Alias, alias) {
+			return &data.Profiles[index], nil
+		}
+	}
+	return nil, errors.New("account profile alias not found")
+}
+
 func (data *Data) FindByAccount(accountID, workspaceID string) []*Profile {
 	var matches []*Profile
 	for index := range data.Profiles {

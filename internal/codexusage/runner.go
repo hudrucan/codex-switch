@@ -41,34 +41,39 @@ type rpcResponse struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code int `json:"code"`
 }
 
-func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot, json.RawMessage, error) {
+func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (snapshot Snapshot, updated json.RawMessage, result error) {
+	defer func() { result = RedactError(result) }()
 	if runner.BinaryError != nil {
-		return Snapshot{}, nil, runner.BinaryError
+		return Snapshot{}, nil, failure("Codex app server", "unavailable", runner.BinaryError)
 	}
 	if runner.Binary == "" {
-		return Snapshot{}, nil, errors.New("official Codex executable not found; install Codex or pass --codex-binary")
+		return Snapshot{}, nil, failure("Codex app server", "unavailable", nil)
 	}
 	document, err := authschema.Parse(auth)
 	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("validate saved account: %w", err)
+		return Snapshot{}, nil, failure("account usage query", "credential validation failed", err)
 	}
 	temporaryHome, err := os.MkdirTemp("", "codex-switch-usage-*")
 	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("create temporary CODEX_HOME: %w", err)
+		return Snapshot{}, nil, failure("temporary CODEX_HOME", "I/O failure", err)
 	}
-	defer func() { _ = os.RemoveAll(temporaryHome) }()
+	defer func() {
+		if err := os.RemoveAll(temporaryHome); err != nil {
+			result = errors.Join(result, failure("temporary CODEX_HOME", "cleanup failed", err))
+			snapshot = Snapshot{}
+		}
+	}()
 	if err := os.Chmod(temporaryHome, 0o700); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("protect temporary CODEX_HOME: %w", err)
+		return Snapshot{}, nil, failure("temporary CODEX_HOME", "I/O failure", err)
 	}
 	if err := atomicfile.Write(filepath.Join(temporaryHome, "config.toml"), []byte("cli_auth_credentials_store = \"file\"\n"), 0o600); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, nil, failure("temporary CODEX_HOME", "I/O failure", err)
 	}
 	if err := atomicfile.Write(filepath.Join(temporaryHome, "auth.json"), append(append([]byte(nil), document.Raw...), '\n'), 0o600); err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, nil, failure("temporary CODEX_HOME", "I/O failure", err)
 	}
 
 	commandFactory := runner.command
@@ -83,23 +88,49 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	command.Env = withEnvironment(environment, "CODEX_HOME", temporaryHome)
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, nil, failure("Codex app server", "I/O failure", err)
 	}
+	defer func() { _ = stdin.Close() }()
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return Snapshot{}, nil, err
+		return Snapshot{}, nil, failure("Codex app server", "I/O failure", err)
 	}
-	var stderr limitedBuffer
-	command.Stderr = &stderr
+	defer func() { _ = stdout.Close() }()
+	command.Stderr = io.Discard
+	command.WaitDelay = 2 * time.Second
 	if err := command.Start(); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("start Codex app server: %w", err)
+		return Snapshot{}, nil, failure("Codex app server", "process failure", err)
 	}
 	waited := false
-	defer func() {
+	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = stdin.Close()
-		if !waited && command.Process != nil {
+		_ = stdout.Close()
+		_ = command.Process.Kill()
+	})
+	defer func() {
+		stopCancellation()
+		_ = stdin.Close()
+		if !waited {
 			_ = command.Process.Kill()
 			_ = command.Wait()
+		}
+		_ = stdout.Close()
+		if result != nil && ctx.Err() != nil {
+			result = errors.Join(result, ctx.Err())
+		}
+		if command.ProcessState == nil {
+			result = errors.Join(result, failure("Codex app server", "cleanup failed", nil))
+			snapshot = Snapshot{}
+			return
+		}
+		recovered, recoveryErr := recoverCredentials(filepath.Join(temporaryHome, "auth.json"), document)
+		if recoveryErr != nil {
+			result = errors.Join(result, recoveryErr)
+		} else {
+			updated = recovered
+		}
+		if result != nil {
+			snapshot = Snapshot{}
 		}
 	}()
 
@@ -117,27 +148,27 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	}
 	initialize, err := readResponse(scanner, 0)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("initialize", err, stderr.String())
+		return Snapshot{}, nil, protocolError("initialize", err)
 	}
 	if initialize.Error != nil {
 		return Snapshot{}, nil, responseError("initialize", initialize.Error)
 	}
 	if err := encoder.Encode(rpcRequest{Method: "initialized", Params: map[string]any{}}); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("send initialized notification: %w", err)
+		return Snapshot{}, nil, failure("initialized", "request failed", err)
 	}
 	if err := sendRequest(encoder, 1, "account/read", map[string]bool{"refreshToken": false}); err != nil {
 		return Snapshot{}, nil, err
 	}
 	accountResponse, err := readResponse(scanner, 1)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account", err, stderr.String())
+		return Snapshot{}, nil, protocolError("account/read", err)
 	}
 	if accountResponse.Error != nil {
 		return Snapshot{}, nil, responseError("account/read", accountResponse.Error)
 	}
 	var account AccountResponse
 	if err := json.Unmarshal(accountResponse.Result, &account); err != nil {
-		return Snapshot{}, nil, fmt.Errorf("decode account/read response: %w", err)
+		return Snapshot{}, nil, failure("account/read", "invalid response", err)
 	}
 	if account.Account == nil || account.Account.Type != "chatgpt" {
 		return Snapshot{}, nil, errors.New("saved profile is not recognized as a ChatGPT account by Codex")
@@ -148,14 +179,14 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	}
 	rateLimitsResponse, err := readResponse(scanner, 2)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account rate limits", err, stderr.String())
+		return Snapshot{}, nil, protocolError("account/rateLimits/read", err)
 	}
 	if err := sendRequest(encoder, 3, "account/usage/read", nil); err != nil {
 		return Snapshot{}, nil, err
 	}
 	tokenUsageResponse, err := readResponse(scanner, 3)
 	if err != nil {
-		return Snapshot{}, nil, protocolError("read account token usage", err, stderr.String())
+		return Snapshot{}, nil, protocolError("account/usage/read", err)
 	}
 	_ = stdin.Close()
 	if err := command.Wait(); err != nil {
@@ -163,28 +194,17 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 		if ctx.Err() != nil {
 			return Snapshot{}, nil, fmt.Errorf("query account usage: %w", ctx.Err())
 		}
-		return Snapshot{}, nil, protocolError("Codex app server exited", err, stderr.String())
+		return Snapshot{}, nil, failure("Codex app server", "process failure", err)
 	}
 	waited = true
-	updated, err := atomicfile.ReadLimited(filepath.Join(temporaryHome, "auth.json"), 2<<20)
-	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("read refreshed account credentials: %w", err)
-	}
-	updatedDocument, err := authschema.Parse(updated)
-	if err != nil {
-		return Snapshot{}, nil, fmt.Errorf("validate refreshed account credentials: %w", err)
-	}
-	if updatedDocument.Tokens.AccountID != document.Tokens.AccountID {
-		return Snapshot{}, nil, errors.New("codex returned credentials for a different account")
-	}
 
-	snapshot := Snapshot{FetchedAt: time.Now().UTC(), PlanType: account.Account.PlanType}
+	snapshot = Snapshot{FetchedAt: time.Now().UTC(), PlanType: account.Account.PlanType}
 	if rateLimitsResponse.Error != nil {
 		snapshot.Partial = append(snapshot.Partial, "rateLimits")
 	} else {
 		var value RateLimits
 		if err := json.Unmarshal(rateLimitsResponse.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/rateLimits/read response: %w", err)
+			return Snapshot{}, nil, failure("account/rateLimits/read", "invalid response", err)
 		}
 		snapshot.RateLimits = &value
 	}
@@ -193,22 +213,22 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (Snapshot,
 	} else {
 		var value TokenUsage
 		if err := json.Unmarshal(tokenUsageResponse.Result, &value); err != nil {
-			return Snapshot{}, nil, fmt.Errorf("decode account/usage/read response: %w", err)
+			return Snapshot{}, nil, failure("account/usage/read", "invalid response", err)
 		}
 		snapshot.TokenUsage = &value
 	}
 	if snapshot.RateLimits == nil && snapshot.TokenUsage == nil {
-		return Snapshot{}, updatedDocument.Raw, fmt.Errorf("account usage requests failed: %w", errors.Join(
+		return Snapshot{}, nil, errors.Join(
 			responseError("account/rateLimits/read", rateLimitsResponse.Error),
 			responseError("account/usage/read", tokenUsageResponse.Error),
-		))
+		)
 	}
-	return snapshot, updatedDocument.Raw, nil
+	return snapshot, nil, nil
 }
 
 func sendRequest(encoder *json.Encoder, id int, method string, params any) error {
 	if err := encoder.Encode(rpcRequest{Method: method, ID: &id, Params: params}); err != nil {
-		return fmt.Errorf("send %s request: %w", method, err)
+		return failure(method, "request failed", err)
 	}
 	return nil
 }
@@ -231,7 +251,7 @@ func readResponses(scanner *bufio.Scanner, expected ...int) (map[int]rpcResponse
 		}
 		var response rpcResponse
 		if err := json.Unmarshal(line, &response); err != nil {
-			return nil, fmt.Errorf("decode JSON-RPC message: %w", err)
+			return nil, failure("account usage query", "invalid response", err)
 		}
 		if len(response.ID) == 0 || bytes.Equal(response.ID, []byte("null")) {
 			continue
@@ -252,15 +272,41 @@ func readResponses(scanner *bufio.Scanner, expected ...int) (map[int]rpcResponse
 }
 
 func responseError(method string, rpcErr *rpcError) error {
-	return fmt.Errorf("%s failed (%d): %s", method, rpcErr.Code, rpcErr.Message)
+	if rpcErr == nil {
+		return failure(method, "protocol failure", nil)
+	}
+	if rpcErr.Code < -32768 || rpcErr.Code > 32767 {
+		return failure(method, "protocol failure", nil)
+	}
+	message := fmt.Sprintf("%s failed (RPC code %d, diagnostics redacted)", safeOperation(method), rpcErr.Code)
+	return &publicError{message: NormalizeErrorMessage(message)}
 }
 
-func protocolError(operation string, err error, stderr string) error {
-	stderr = strings.TrimSpace(stderr)
-	if stderr == "" {
-		return fmt.Errorf("%s: %w", operation, err)
+func protocolError(operation string, err error) error {
+	return failure(operation, "protocol failure", err)
+}
+
+func recoverCredentials(path string, original authschema.Document) (json.RawMessage, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, failure("refreshed credentials", "I/O failure", err)
 	}
-	return fmt.Errorf("%s: %w (Codex app-server diagnostics redacted)", operation, err)
+	raw, err := atomicfile.ReadLimited(path, 2<<20)
+	if err != nil {
+		return nil, failure("refreshed credentials", "I/O failure", err)
+	}
+	candidate, err := authschema.Parse(raw)
+	if err != nil {
+		return nil, errors.New("refreshed credentials are invalid")
+	}
+	decision, err := authschema.ValidateRefresh(original, candidate)
+	if err != nil {
+		return nil, err
+	}
+	if decision == authschema.GenerationUseSaved {
+		return nil, errors.New("refreshed credentials are older than the validated generation")
+	}
+	return candidate.Raw, nil
 }
 
 func withEnvironment(environment []string, key, value string) []string {
@@ -272,25 +318,4 @@ func withEnvironment(environment []string, key, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
-}
-
-type limitedBuffer struct {
-	buffer bytes.Buffer
-}
-
-func (buffer *limitedBuffer) Write(data []byte) (int, error) {
-	const limit = 16 << 10
-	original := len(data)
-	remaining := limit - buffer.buffer.Len()
-	if remaining > 0 {
-		if len(data) > remaining {
-			data = data[:remaining]
-		}
-		_, _ = buffer.buffer.Write(data)
-	}
-	return original, nil
-}
-
-func (buffer *limitedBuffer) String() string {
-	return buffer.buffer.String()
 }

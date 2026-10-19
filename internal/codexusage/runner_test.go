@@ -43,7 +43,7 @@ func TestRunnerQueriesUsageAndReturnsRefreshedCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	if wire.Tokens.Refresh != "refresh-new" {
-		t.Fatalf("refreshed credentials were not returned: %s", wire.Tokens.Refresh)
+		t.Fatal("refreshed credentials were not returned")
 	}
 }
 
@@ -64,18 +64,18 @@ func TestRunnerPreservesBothUsageMethodErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage query error")
 	}
-	for _, expected := range []string{"account/rateLimits/read failed (-32001): overloaded", "account/usage/read failed (-32601): method not found"} {
+	for _, expected := range []string{"account/rateLimits/read failed (RPC code -32001, diagnostics redacted)", "account/usage/read failed (RPC code -32601, diagnostics redacted)"} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Fatalf("error %q does not contain %q", err, expected)
 		}
 	}
 	if !strings.Contains(string(updated), "refresh-new") {
-		t.Fatalf("rotated credentials were lost on usage failure: %s", updated)
+		t.Fatal("rotated credentials were lost on usage failure")
 	}
 }
 
 func TestProtocolErrorRedactsChildDiagnostics(t *testing.T) {
-	err := protocolError("query", context.DeadlineExceeded, "secret child output")
+	err := protocolError("query", errors.Join(context.DeadlineExceeded, errors.New("secret child output")))
 	if strings.Contains(err.Error(), "secret child output") || !strings.Contains(err.Error(), "redacted") {
 		t.Fatalf("unexpected protocol error: %v", err)
 	}

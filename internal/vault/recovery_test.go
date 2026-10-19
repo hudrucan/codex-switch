@@ -243,7 +243,7 @@ func TestKeyWriteFailuresRemainRecoverable(t *testing.T) {
 				func() {
 					defer func() {
 						if failure := recover(); failure != nil {
-							if failure != errInterrupted {
+							if failureErr, ok := failure.(error); !ok || !errors.Is(failureErr, errInterrupted) {
 								panic(failure)
 							}
 							interrupted = true

@@ -124,7 +124,7 @@ func observationWithoutLive(data vault.Data, state appstate.State) Observation {
 	observation.State = AccountStateLoggedOut
 	observation.NeedsSync = true
 	observation.RecordedProfileID = state.ActiveProfileID
-	if profile, err := data.Find(state.ActiveProfileID); err == nil {
+	if profile, err := data.FindByID(state.ActiveProfileID); err == nil {
 		observation.RecordedAlias = profile.Alias
 	}
 	return observation
@@ -140,7 +140,7 @@ func observeLive(data vault.Data, state appstate.State, live authschema.Document
 		RecordedProfileID: state.ActiveProfileID,
 	}
 	if state.ActiveProfileID != "" {
-		if profile, err := data.Find(state.ActiveProfileID); err == nil {
+		if profile, err := data.FindByID(state.ActiveProfileID); err == nil {
 			observation.RecordedAlias = profile.Alias
 		}
 	}
@@ -264,7 +264,7 @@ func (service Service) Sync(options SyncOptions) (SyncResult, error) {
 		if err := service.ensureLiveHash(snapshot.liveHash); err != nil {
 			return result, err
 		}
-		saved, err := snapshot.data.Find(options.Alias)
+		saved, err := snapshot.data.FindByAlias(options.Alias)
 		if err != nil {
 			return result, err
 		}
@@ -283,7 +283,7 @@ func (service Service) Sync(options SyncOptions) (SyncResult, error) {
 		return result, errors.New("--as can only be used when the active Codex login is unmanaged")
 	}
 
-	profile, err := snapshot.data.Find(snapshot.observation.ProfileID)
+	profile, err := snapshot.data.FindByID(snapshot.observation.ProfileID)
 	if err != nil {
 		return result, err
 	}

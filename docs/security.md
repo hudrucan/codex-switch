@@ -61,6 +61,66 @@ focuses on:
 - Authentication documents larger than the configured limit are rejected.
 - A symlink at a managed destination is rejected instead of followed.
 
+## Failed usage queries and diagnostic redaction
+
+After an isolated App Server starts, every return first terminates/reaps it and
+then reads its final authentication file before removing the temporary home.
+Recovery requires a regular, size-limited authentication file, a supported schema,
+the original account identity, and the original workspace when that workspace
+was known. Missing or changed known workspace evidence fails closed. Existing
+token-material/timestamp generation semantics are preserved: only a validated
+newer generation advances retry inputs and saved credentials; older, conflicting,
+cross-account, cross-workspace, malformed, and ambiguous candidates are rejected.
+
+A valid recovered refresh does not hide an RPC, protocol, process, timeout, or
+cancellation failure. Usage snapshots remain unsuccessful while credentials can
+still be reconciled into the encrypted vault and, when safe, active auth. Retry
+backoff and pre-attempt cancellation retain the latest validated candidate.
+Cache failures and unreadable active state cannot prevent the earlier vault
+reconciliation; uncertain active state is never used to guess a projection.
+
+Refresh selection and persistence resolve internal profile IDs exactly, without
+alias fallback. A legal alias matching another profile's ID cannot redirect a
+query, suppress a selected profile, or receive another profile's credentials.
+User-provided aliases retain their existing lookup behavior.
+
+The same exact-ID rule applies to switcher reconciliation and recorded aliases:
+`state.ActiveProfileID` and observed profile IDs are never interpreted as aliases.
+Observe, Use, and Sync therefore cannot redirect profile A's live credentials,
+workspace metadata, or active state into a profile B whose alias matches A's ID.
+A missing recorded ID leaves the recorded alias unknown. User switch targets
+and account CLI selectors retain their existing lookup behavior. After profile
+creation, add/import-current and unmanaged `Sync --as` use alias-only lookup to
+retrieve the profile just added. An alias equal to an existing ID cannot redirect
+returned metadata or the new active pointer. Such namespace collisions remain
+valid vault data. The production call-site classification is in `architecture.md`.
+
+Explicit `account list --refresh` and `account usage <alias>`/`--all` select
+validated vault profiles before auxiliary failures can abort recovery. Corrupt
+cache, active state, or live authentication can still produce a redacted command
+error after credential persistence; those files are not silently repaired.
+Invalid active state never supplies an implicit selection or permits live
+projection. `--cached` remains offline and does not trigger recovery writes.
+
+Raw RPC error messages/data are discarded, and subprocess stderr is sent to a
+discard sink. Public errors are restricted to fixed classifications, fixed method
+names, and numeric RPC codes in a bounded range. They preserve `errors.Is`
+without exposing untrusted causes through formatting or unwrapping. Error
+strings are at most 1024 bytes. Usage-cache load/save and CLI usage views apply
+the same strict allowlist to failure messages, including caches from older
+versions; arbitrary JSON field names and decoder diagnostics are not echoed.
+Existing unsafe messages are not rewritten on a read-only cache load, but are
+redacted in memory and on the next save. Public JSON keys and vault formats do
+not change; diagnostic text is intentionally less detailed.
+
+Recovery cannot reconstruct a refresh that was never written, was truncated, or
+cannot be identity/generation-validated. A failed vault write or unavailable
+credential store still limits persistence; P1 retains its key-recovery behavior.
+Cleanup is best effort when the operating system cannot kill/reap a process or
+remove files; such failure is reported without reading credentials from an
+unconfirmed running child. Tests use synthetic helper processes and do not
+verify live OAuth or every Codex App Server version.
+
 ## Vault key publication and recovery
 
 Vault creation and rotation store a fresh key before publishing its encrypted

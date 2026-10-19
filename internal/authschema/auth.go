@@ -5,12 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 )
 
 var ErrAmbiguousGeneration = errors.New("authentication token generations are ambiguous")
+var ErrIdentityMismatch = errors.New("refreshed credentials do not match the saved account or workspace")
 
 type Tokens struct {
 	IDToken      string `json:"id_token"`
@@ -49,10 +49,10 @@ func Parse(data []byte) (Document, error) {
 	}
 	var wire wireDocument
 	if err := json.Unmarshal(trimmed, &wire); err != nil {
-		return Document{}, fmt.Errorf("decode auth.json: %w", err)
+		return Document{}, errors.New("auth.json has an unsupported structure")
 	}
 	if wire.AuthMode != "chatgpt" {
-		return Document{}, fmt.Errorf("unsupported auth_mode %q; only ChatGPT login is supported", wire.AuthMode)
+		return Document{}, errors.New("unsupported auth_mode; only ChatGPT login is supported")
 	}
 	if strings.TrimSpace(wire.Tokens.AccountID) == "" {
 		return Document{}, errors.New("ChatGPT auth is missing tokens.account_id")
@@ -110,7 +110,7 @@ const (
 
 func CompareGeneration(saved, live Document) (GenerationDecision, error) {
 	if saved.Tokens.AccountID != live.Tokens.AccountID {
-		return GenerationUseSaved, fmt.Errorf("account mismatch: saved %s, live %s", saved.Tokens.AccountID, live.Tokens.AccountID)
+		return GenerationUseSaved, ErrIdentityMismatch
 	}
 	if SameMaterial(saved, live) {
 		return GenerationSame, nil
@@ -124,6 +124,15 @@ func CompareGeneration(saved, live Document) (GenerationDecision, error) {
 		return GenerationAdoptLive, nil
 	}
 	return GenerationUseSaved, nil
+}
+
+// ValidateRefresh preserves generation ordering and requires a known workspace
+// to remain present and unchanged in refreshed credentials.
+func ValidateRefresh(saved, candidate Document) (GenerationDecision, error) {
+	if saved.Tokens.AccountID != candidate.Tokens.AccountID || (saved.WorkspaceID != "" && saved.WorkspaceID != candidate.WorkspaceID) {
+		return GenerationUseSaved, ErrIdentityMismatch
+	}
+	return CompareGeneration(saved, candidate)
 }
 
 func tokenMetadata(token string) (string, string) {

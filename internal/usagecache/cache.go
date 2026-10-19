@@ -3,7 +3,6 @@ package usagecache
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"time"
 
@@ -29,14 +28,14 @@ func Load(path string) (Cache, error) {
 		return Cache{Version: 1, Profiles: map[string]codexusage.Snapshot{}, Failures: map[string]Failure{}}, nil
 	}
 	if err != nil {
-		return Cache{}, err
+		return Cache{}, errors.New("read usage cache failed")
 	}
 	var cache Cache
 	if err := json.Unmarshal(data, &cache); err != nil {
-		return Cache{}, fmt.Errorf("decode usage cache: %w", err)
+		return Cache{}, errors.New("usage cache is invalid")
 	}
 	if cache.Version != 1 {
-		return Cache{}, fmt.Errorf("unsupported usage cache version %d", cache.Version)
+		return Cache{}, errors.New("usage cache is invalid")
 	}
 	if cache.Profiles == nil {
 		cache.Profiles = map[string]codexusage.Snapshot{}
@@ -44,6 +43,7 @@ func Load(path string) (Cache, error) {
 	if cache.Failures == nil {
 		cache.Failures = map[string]Failure{}
 	}
+	normalizeFailures(&cache)
 	return cache, nil
 }
 
@@ -55,9 +55,20 @@ func Save(path string, cache Cache) error {
 	if cache.Failures == nil {
 		cache.Failures = map[string]Failure{}
 	}
+	normalizeFailures(&cache)
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
-		return err
+		return errors.New("encode usage cache failed")
 	}
-	return atomicfile.Write(path, append(data, '\n'), 0o600)
+	if err := atomicfile.Write(path, append(data, '\n'), 0o600); err != nil {
+		return errors.New("write usage cache failed")
+	}
+	return nil
+}
+
+func normalizeFailures(cache *Cache) {
+	for id, failure := range cache.Failures {
+		failure.Message = codexusage.NormalizeErrorMessage(failure.Message)
+		cache.Failures[id] = failure
+	}
 }

@@ -49,11 +49,12 @@ type Options struct {
 }
 
 type runtimeState struct {
-	home    codexhome.Home
-	paths   appconfig.Paths
-	manager *vault.Manager
-	bin     string
-	binErr  error
+	home        codexhome.Home
+	paths       appconfig.Paths
+	manager     *vault.Manager
+	bin         string
+	binErr      error
+	usageRunner accountusage.QueryRunner
 }
 
 type accountView struct {
@@ -286,15 +287,21 @@ func newAccountListCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			observation, err := runtime.switcher().Observe()
-			if err != nil {
-				return err
+			var observation switcher.Observation
+			var cache usagecache.Cache
+			// Explicit refresh selects profiles from the validated vault. Auxiliary
+			// state is inspected afterward so it cannot prevent credential recovery.
+			if !refresh {
+				observation, err = runtime.switcher().Observe()
+				if err != nil {
+					return codexusage.RedactError(err)
+				}
+				cache, err = runtime.usageService(options.Version).Cached()
+				if err != nil {
+					return err
+				}
 			}
 			activeProfileID := observation.ProfileID
-			cache, err := runtime.usageService(options.Version).Cached()
-			if err != nil {
-				return err
-			}
 			refreshIDs := make([]string, 0, len(data.Profiles))
 			if !cached {
 				for _, profile := range data.Profiles {
@@ -322,7 +329,7 @@ func newAccountListCommand(options *Options) *cobra.Command {
 				}
 				observation, err = runtime.switcher().Observe()
 				if err != nil {
-					return err
+					return codexusage.RedactError(err)
 				}
 				activeProfileID = observation.ProfileID
 			}
@@ -391,9 +398,9 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			observation, err := runtime.switcher().Observe()
-			if err != nil {
-				return err
+			observation, observationErr := runtime.switcher().Observe()
+			if observationErr != nil && (cached || (!all && len(args) == 0)) {
+				return codexusage.RedactError(observationErr)
 			}
 			activeProfileID := observation.ProfileID
 			profiles := make([]vault.Profile, 0, len(data.Profiles))
@@ -413,7 +420,7 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 				if !observation.Managed {
 					return errors.New("the active account is unmanaged or ambiguous; pass a saved alias")
 				}
-				profile, findErr := data.Find(activeProfileID)
+				profile, findErr := data.FindByID(activeProfileID)
 				if findErr != nil {
 					return errors.New("the active account is unmanaged; pass a saved alias")
 				}
@@ -445,7 +452,7 @@ func newAccountUsageCommand(options *Options) *cobra.Command {
 			if !cached {
 				observation, err = runtime.switcher().Observe()
 				if err != nil {
-					return err
+					return codexusage.RedactError(err)
 				}
 				activeProfileID = observation.ProfileID
 			}
@@ -1038,15 +1045,17 @@ func (runtime runtimeState) switcher() switcher.Service {
 }
 
 func (runtime runtimeState) usageService(version string) accountusage.Service {
+	runner := runtime.usageRunner
+	if runner == nil {
+		runner = codexusage.Runner{
+			Binary: runtime.bin, BinaryError: runtime.binErr, ClientVersion: version,
+		}
+	}
 	return accountusage.Service{
-		Home:  runtime.home,
-		Paths: runtime.paths,
-		Vault: runtime.manager,
-		Runner: codexusage.Runner{
-			Binary:        runtime.bin,
-			BinaryError:   runtime.binErr,
-			ClientVersion: version,
-		},
+		Home:   runtime.home,
+		Paths:  runtime.paths,
+		Vault:  runtime.manager,
+		Runner: runner,
 	}
 }
 
@@ -1151,7 +1160,7 @@ func addDocument(manager *vault.Manager, alias, source string, document authsche
 	if err := manager.Save(data); err != nil {
 		return vault.Profile{}, err
 	}
-	saved, err := data.Find(alias)
+	saved, err := data.FindByAlias(alias)
 	if err != nil {
 		return vault.Profile{}, err
 	}
@@ -1232,6 +1241,7 @@ func usageFromCache(cache usagecache.Cache, profileID, queryError string, now ti
 	if queryError == "" {
 		queryError = failure.Message
 	}
+	queryError = codexusage.NormalizeErrorMessage(queryError)
 	if queryError != "" && failure.AttemptedAt.IsZero() {
 		failure.AttemptedAt = now
 	}

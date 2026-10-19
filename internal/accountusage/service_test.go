@@ -94,7 +94,7 @@ func TestRefreshRetriesAndClearsPersistedFailure(t *testing.T) {
 	}
 	retriedWith, err := authschema.Parse(runner.inputs[1])
 	if err != nil || retriedWith.Tokens.RefreshToken != "refresh-new" {
-		t.Fatalf("retry did not use rotated credentials: %#v, %v", retriedWith.Tokens, err)
+		t.Fatal("retry did not use rotated credentials")
 	}
 	cache, err := service.Cached()
 	if err != nil {

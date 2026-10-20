@@ -155,7 +155,8 @@ file with both hashes and completes the state transition.
 
 ```text
 read live auth and recorded state
-  -> match account_id plus workspace_id against encrypted profiles
+  -> parse identity from explicit top-level and OpenAI auth namespace claims
+  -> require account and known workspace continuity against document and profile
   -> prefer one exact credential-material match
   -> classify in-sync, external login, refresh, unmanaged, or ambiguous
   -> for sync: compare the live hash again
@@ -169,6 +170,17 @@ state or credentials; usage refresh may persist a validated newer token
 generation. `sync` performs explicit reconciliation
 writes under the shared lock. Unknown and multiple matches are never assigned
 by email or alias, and conflicting token generations require `--prefer-live`.
+Known workspace evidence must remain present and equal in live credentials, even
+when token material matches exactly. Unknown workspace evidence may become known
+only with an otherwise unambiguous identity. Observation never fills missing
+live workspace evidence from saved metadata. Generation preference cannot
+override account/workspace mismatch.
+
+Workspace claims (`workspace_id`, `workspaceId`, `chatgpt_workspace_id`) and
+`email` are read only at the top level or directly inside
+`https://api.openai.com/auth`. Equal non-empty evidence is accepted; conflicting
+or structurally invalid supported evidence is rejected with a fixed error.
+Unrelated nested claims are ignored and the complete raw document is preserved.
 
 ## Isolated usage query
 
@@ -180,7 +192,7 @@ acquire shared operation lock
   -> initialize the official Codex App Server
   -> read account/read, account/rateLimits/read, and account/usage/read in order
   -> retain quota reset times and any earned-reset count and expiration metadata
-  -> stop and reap the server on every exit path after startup
+  -> terminate the owned server lifecycle and reap the wrapper on every exit path
   -> recover and validate its final authentication file
   -> delete the temporary home
   -> reconcile any newer credential generation, including one produced by a failed query
@@ -195,10 +207,16 @@ backoff using the newest validated credential generation returned by the prior
 attempt. Multi-account refreshes are intentionally sequential so independent
 App Server processes do not compete for startup or authentication resources.
 
-All returns after App Server startup share one cleanup/recovery path. Cancellation
-closes protocol pipes and terminates the child; its exit is reaped before reading
-the final authentication file. Only a regular file within the temporary home is
-read, with the configured authentication size limit. Schema, account, known
+All returns after App Server startup share one cleanup/recovery path. Unix
+launches the server in its own process group. Windows starts it suspended,
+assigns it to a kill-on-close job without breakaway permission, and only then
+resumes its initial thread. Job assignment or ambiguous startup fails closed.
+Cancellation closes protocol pipes and terminates the owned group/job. Cleanup
+reaps the wrapper and confirms the group/job is empty before reading final
+authentication. Confirmation is bounded and independent of the cancelled query
+context. If it fails, no auth is recovered and the private temporary home is
+retained; it is not removed while the lifecycle remains uncertain. Only a
+regular file within the temporary home is read, with the configured authentication size limit. Schema, account, known
 workspace, and generation checks run even when initialization, RPC, decoding,
 process exit, or cancellation failed. A known workspace must not disappear or
 change. An unknown original workspace may become known; generation ordering

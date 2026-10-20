@@ -43,7 +43,7 @@ func DetectCodex() ([]Info, error) {
 
 func isCodexProcess(command, args string) bool {
 	if command == "codex" || command == "Codex" || command == "ChatGPT" {
-		return !strings.Contains(args, "codex-switch")
+		return true
 	}
 	return strings.Contains(args, "/ChatGPT.app/Contents/MacOS/ChatGPT")
 }

@@ -64,7 +64,10 @@ func Parse(data []byte) (Document, error) {
 		return Document{}, errors.New("ChatGPT auth is missing tokens.refresh_token")
 	}
 
-	email, workspace := tokenMetadata(wire.Tokens.IDToken)
+	email, workspace, err := tokenMetadata(wire.Tokens.IDToken)
+	if err != nil {
+		return Document{}, err
+	}
 	return Document{
 		Raw:         append(json.RawMessage(nil), trimmed...),
 		AuthMode:    wire.AuthMode,
@@ -129,49 +132,74 @@ func CompareGeneration(saved, live Document) (GenerationDecision, error) {
 // ValidateRefresh preserves generation ordering and requires a known workspace
 // to remain present and unchanged in refreshed credentials.
 func ValidateRefresh(saved, candidate Document) (GenerationDecision, error) {
-	if saved.Tokens.AccountID != candidate.Tokens.AccountID || (saved.WorkspaceID != "" && saved.WorkspaceID != candidate.WorkspaceID) {
-		return GenerationUseSaved, ErrIdentityMismatch
+	if err := ValidateIdentity(saved.Tokens.AccountID, saved.WorkspaceID, candidate); err != nil {
+		return GenerationUseSaved, err
 	}
 	return CompareGeneration(saved, candidate)
 }
 
-func tokenMetadata(token string) (string, string) {
+// ValidateIdentity requires known identity evidence to survive reconciliation.
+// Callers with persisted metadata also validate that evidence before generation.
+func ValidateIdentity(accountID, workspaceID string, candidate Document) error {
+	if accountID != candidate.Tokens.AccountID || (workspaceID != "" && workspaceID != candidate.WorkspaceID) {
+		return ErrIdentityMismatch
+	}
+	return nil
+}
+
+func tokenMetadata(token string) (string, string, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
-		return "", ""
+		return "", "", nil
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", ""
+		return "", "", nil
 	}
-	var claims map[string]any
-	if json.Unmarshal(payload, &claims) != nil {
-		return "", ""
+	var email, workspace string
+	if !json.Valid(payload) || readMetadata(payload, true, &email, &workspace) != nil {
+		return "", "", errors.New("authentication identity claims are invalid or conflicting")
 	}
-	email := findString(claims, "email")
-	workspace := findString(claims, "workspace_id", "workspaceId", "chatgpt_workspace_id")
-	return email, workspace
+	return email, workspace, nil
 }
 
-func findString(value any, keys ...string) string {
-	switch typed := value.(type) {
-	case map[string]any:
-		for _, key := range keys {
-			if candidate, ok := typed[key].(string); ok && candidate != "" {
-				return candidate
+// Only top-level claims and the OpenAI auth namespace supply metadata. Reading
+// members individually also detects conflicting duplicate JSON members.
+func readMetadata(raw []byte, namespace bool, email, workspace *string) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return ErrIdentityMismatch
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return ErrIdentityMismatch
+		}
+		var value json.RawMessage
+		if decoder.Decode(&value) != nil {
+			return ErrIdentityMismatch
+		}
+		var destination *string
+		switch key {
+		case "workspace_id", "workspaceId", "chatgpt_workspace_id":
+			destination = workspace
+		case "email":
+			destination = email
+		case "https://api.openai.com/auth":
+			if namespace && readMetadata(value, false, email, workspace) != nil {
+				return ErrIdentityMismatch
 			}
 		}
-		for _, child := range typed {
-			if candidate := findString(child, keys...); candidate != "" {
-				return candidate
+		if destination != nil {
+			var claim string
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || json.Unmarshal(value, &claim) != nil || (*destination != "" && claim != "" && *destination != claim) {
+				return ErrIdentityMismatch
 			}
-		}
-	case []any:
-		for _, child := range typed {
-			if candidate := findString(child, keys...); candidate != "" {
-				return candidate
+			if claim != "" {
+				*destination = claim
 			}
 		}
 	}
-	return ""
+	return nil
 }

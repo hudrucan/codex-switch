@@ -143,7 +143,7 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (output
 			results[profileID] = entry
 			continue
 		}
-		if candidate.Tokens.AccountID != profile.AccountID || (profile.WorkspaceID != "" && candidate.WorkspaceID != profile.WorkspaceID) {
+		if authschema.ValidateIdentity(profile.AccountID, profile.WorkspaceID, candidate) != nil {
 			entry := results[profileID]
 			entry.Error = appendError(entry.Error, "refreshed credentials do not match the saved account or workspace")
 			results[profileID] = entry

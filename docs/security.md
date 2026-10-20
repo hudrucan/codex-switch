@@ -37,6 +37,11 @@ Skills, MCP settings, and UI state remain in the shared `CODEX_HOME`.
 Unknown fields in supported authentication JSON are preserved. Unsupported
 modes, invalid schemas, ambiguous identities/generations, and documents above
 the configured size limit are rejected. Managed destinations reject symlinks.
+Identity metadata comes only from explicit top-level or OpenAI auth namespace
+claims, never arbitrary nested fields. Supported workspace/email evidence must
+be structurally valid and consistent, including duplicate members. Raw unknown
+fields are preserved.
+
 Portable backups require a passphrase of at least 12 characters and use Argon2id
 before XChaCha20-Poly1305 encryption. Commands provide no token retrieval API;
 public JSON uses dedicated view types, and the usage cache contains no auth
@@ -66,14 +71,25 @@ internal selection, credentials, metadata, or active state to another profile.
 Active identity comes from live account/workspace and credential material,
 never a remembered alias or email. Observation is read-only. Mutating sync uses
 compare-before-replace and the switch recovery journal; normal switching also
-requires the running-Codex process guard. Ambiguous identity and generation
-evidence fail closed. See `architecture.md` for transaction and lookup rules.
+requires the running-Codex process guard. Recognized Codex/ChatGPT executable
+identity cannot be suppressed by ordinary argument text; the guard excludes
+only its own PID. Known workspace evidence in either saved auth or persisted
+profile metadata must survive live reconciliation. Missing/different workspace
+evidence fails closed before generation comparison, including `--prefer-live`.
+Observations do not invent missing live workspace evidence. Ambiguous identity
+and generation evidence fail closed. See `architecture.md` for transaction and
+lookup rules.
 
 ## Usage refresh and recovery guarantees
 
 Usage queries use per-profile temporary homes with mode `0700` and auth files
-with mode `0600`. After App Server startup, every exit path stops and reaps the
-child before reading its final auth file, then removes the temporary home.
+with mode `0600` on Unix. App Server startup creates an owned process group on
+Unix or a Windows kill-on-close job. Windows executes no wrapper code before
+job assignment; unsupported assignment/startup fails closed. Every exit path
+terminates the owned group/job, reaps the direct child, and confirms lifecycle
+termination before reading final auth and removing the temporary home. Failed
+confirmation returns a redacted cleanup error, recovers no auth, and retains the
+private temporary home.
 Recovery accepts only a regular, size-limited file with a supported schema,
 the original account, and the original workspace when known. Missing or changed
 known workspace evidence fails closed. Only a validated newer generation
@@ -230,7 +246,12 @@ explicit, and Dependabot monitors Go and Actions weekly.
   cannot be recovered. Failed vault writes or an unavailable store may prevent
   persistence. Cleanup is best effort if the OS cannot stop/reap a process or
   remove files. Failures are reported without raw diagnostics; auth is not read
-  from an unconfirmed running child.
+  from an unconfirmed process lifecycle, and its temporary home is retained.
+  Unix process groups contain descendants that inherit the group; deliberate
+  session/group escape by a same-user executable is outside this boundary.
+  Executable discovery still trusts the selected official CLI/wrapper. Windows
+  job/thread restrictions can prevent usage queries rather than permit unsafe
+  uncontained execution.
 - Windows may refuse replacement of a running executable; failure retains the
   old path. Same-user filesystem races remain within the local trust boundary.
 - Hosted runners, transitive Action code/downloaders, Go checksum infrastructure,

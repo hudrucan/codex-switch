@@ -163,16 +163,13 @@ func observeLive(data vault.Data, state appstate.State, live authschema.Document
 	if observation.Email == "" {
 		observation.Email = profile.Email
 	}
-	if observation.WorkspaceID == "" {
-		observation.WorkspaceID = profile.WorkspaceID
-	}
-	saved, parseErr := authschema.Parse(profile.Auth)
+	saved, parseErr := profileIdentity(profile, live)
 	if parseErr != nil {
 		observation.State = AccountStateCredentialConflict
 		observation.CredentialState = CredentialStateAmbiguous
 		return observation
 	}
-	decision, compareErr := authschema.CompareGeneration(saved, live)
+	decision, compareErr := authschema.ValidateRefresh(saved, live)
 	switch {
 	case errors.Is(compareErr, authschema.ErrAmbiguousGeneration):
 		observation.CredentialState = CredentialStateAmbiguous
@@ -324,12 +321,28 @@ func (service Service) Sync(options SyncOptions) (SyncResult, error) {
 	return result, nil
 }
 
-func updateProfileFromLive(profile *vault.Profile, live authschema.Document, preferLive bool) (bool, authschema.GenerationDecision, error) {
+// Both the saved document and persisted metadata can carry known workspace
+// evidence. Generation preference cannot authorize losing either identity.
+func profileIdentity(profile *vault.Profile, live authschema.Document) (authschema.Document, error) {
 	saved, err := authschema.Parse(profile.Auth)
 	if err != nil {
-		return false, authschema.GenerationSame, fmt.Errorf("saved active account is invalid: %w", err)
+		return authschema.Document{}, fmt.Errorf("saved active account is invalid: %w", err)
 	}
-	decision, err := authschema.CompareGeneration(saved, live)
+	if err := authschema.ValidateIdentity(profile.AccountID, profile.WorkspaceID, live); err != nil {
+		return authschema.Document{}, err
+	}
+	if err := authschema.ValidateIdentity(saved.Tokens.AccountID, saved.WorkspaceID, live); err != nil {
+		return authschema.Document{}, err
+	}
+	return saved, nil
+}
+
+func updateProfileFromLive(profile *vault.Profile, live authschema.Document, preferLive bool) (bool, authschema.GenerationDecision, error) {
+	saved, err := profileIdentity(profile, live)
+	if err != nil {
+		return false, authschema.GenerationSame, err
+	}
+	decision, err := authschema.ValidateRefresh(saved, live)
 	if errors.Is(err, authschema.ErrAmbiguousGeneration) {
 		if !preferLive {
 			return false, authschema.GenerationSame, errors.New("the active Codex credentials changed but their generation is ambiguous; rerun 'codex-switch sync --prefer-live' to adopt the live login")

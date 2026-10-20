@@ -278,9 +278,14 @@ func (service Service) readLive() (authschema.Document, bool, error) {
 func identifyCurrent(data *vault.Data, live authschema.Document) (*vault.Profile, error) {
 	accountMatches := data.FindByAccount(live.Tokens.AccountID, "")
 	exactMatches := make([]*vault.Profile, 0, len(accountMatches))
+	matches := make([]*vault.Profile, 0, len(accountMatches))
 	for _, profile := range accountMatches {
-		document, err := authschema.Parse(profile.Auth)
-		if err == nil && authschema.SameMaterial(document, live) {
+		document, err := profileIdentity(profile, live)
+		if err != nil {
+			continue
+		}
+		matches = append(matches, profile)
+		if authschema.SameMaterial(document, live) {
 			exactMatches = append(exactMatches, profile)
 		}
 	}
@@ -290,17 +295,19 @@ func identifyCurrent(data *vault.Data, live authschema.Document) (*vault.Profile
 	if len(exactMatches) > 1 {
 		return nil, errors.New("multiple managed profiles exactly match the active ChatGPT credentials")
 	}
-	matches := make([]*vault.Profile, 0, len(accountMatches))
-	for _, profile := range accountMatches {
-		if live.WorkspaceID == "" || profile.WorkspaceID == "" || profile.WorkspaceID == live.WorkspaceID {
-			matches = append(matches, profile)
-		}
+	// Missing live workspace evidence cannot disambiguate a changed generation
+	// from other profiles of the same account, even if one has unknown metadata.
+	if live.WorkspaceID == "" && len(accountMatches) > 1 {
+		return nil, authschema.ErrIdentityMismatch
 	}
 	if len(matches) == 1 {
 		return matches[0], nil
 	}
 	if len(matches) > 1 {
 		return nil, errors.New("multiple managed profiles match the active ChatGPT account; no profile can be selected safely")
+	}
+	if len(accountMatches) != 0 {
+		return nil, authschema.ErrIdentityMismatch
 	}
 	return nil, nil
 }

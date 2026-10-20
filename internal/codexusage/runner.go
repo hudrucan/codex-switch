@@ -26,6 +26,7 @@ type Runner struct {
 	BinaryError   error
 	ClientVersion string
 	command       func(context.Context, string, ...string) *exec.Cmd
+	confirmExit   func(func() (bool, error)) error
 }
 
 type rpcRequest struct {
@@ -60,7 +61,11 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (snapshot 
 	if err != nil {
 		return Snapshot{}, nil, failure("temporary CODEX_HOME", "I/O failure", err)
 	}
+	removeHome := true
 	defer func() {
+		if !removeHome {
+			return
+		}
 		if err := os.RemoveAll(temporaryHome); err != nil {
 			result = errors.Join(result, failure("temporary CODEX_HOME", "cleanup failed", err))
 			snapshot = Snapshot{}
@@ -98,31 +103,54 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (snapshot 
 	defer func() { _ = stdout.Close() }()
 	command.Stderr = io.Discard
 	command.WaitDelay = 2 * time.Second
+	lifecycle, err := newServerLifecycle(command)
+	if err != nil {
+		return Snapshot{}, nil, failure("Codex app server", "process failure", err)
+	}
+	defer func() {
+		if err := lifecycle.close(); err != nil {
+			result = errors.Join(result, failure("Codex app server", "cleanup failed", err))
+			snapshot = Snapshot{}
+		}
+	}()
+	if command.Cancel != nil {
+		command.Cancel = lifecycle.terminate
+	}
 	if err := command.Start(); err != nil {
 		return Snapshot{}, nil, failure("Codex app server", "process failure", err)
 	}
+	removeHome = false
 	waited := false
+	cancellationDone := make(chan struct{})
 	stopCancellation := context.AfterFunc(ctx, func() {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		_ = command.Process.Kill()
+		defer close(cancellationDone)
+		_ = lifecycle.terminate()
 	})
 	defer func() {
-		stopCancellation()
+		if !stopCancellation() {
+			<-cancellationDone
+		}
 		_ = stdin.Close()
+		_ = lifecycle.terminate()
 		if !waited {
-			_ = command.Process.Kill()
 			_ = command.Wait()
 		}
 		_ = stdout.Close()
 		if result != nil && ctx.Err() != nil {
 			result = errors.Join(result, ctx.Err())
 		}
-		if command.ProcessState == nil {
-			result = errors.Join(result, failure("Codex app server", "cleanup failed", nil))
+		confirmExit := runner.confirmExit
+		if confirmExit == nil {
+			confirmExit = waitForServerExit
+		}
+		if err := confirmExit(lifecycle.empty); err != nil || command.ProcessState == nil {
+			result = errors.Join(result, failure("Codex app server", "cleanup failed", err))
 			snapshot = Snapshot{}
 			return
 		}
+		removeHome = true
 		recovered, recoveryErr := recoverCredentials(filepath.Join(temporaryHome, "auth.json"), document)
 		if recoveryErr != nil {
 			result = errors.Join(result, recoveryErr)
@@ -133,6 +161,10 @@ func (runner Runner) Query(ctx context.Context, auth json.RawMessage) (snapshot 
 			snapshot = Snapshot{}
 		}
 	}()
+
+	if err := lifecycle.started(); err != nil {
+		return Snapshot{}, nil, failure("Codex app server", "process failure", err)
+	}
 
 	encoder := json.NewEncoder(stdin)
 	scanner := bufio.NewScanner(stdout)

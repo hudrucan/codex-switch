@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -253,4 +254,35 @@ func TestUsageFailureHelperProcess(t *testing.T) {
 		os.Exit(17)
 	}
 	os.Exit(0)
+}
+
+func TestUnconfirmedLifecycleCannotRecoverOrRemoveCredentials(t *testing.T) {
+	runner, child, _ := failureRunner(t, "crash", "initialize", testAuth("account-a", "refresh-new", "2026-08-20T01:00:00Z"))
+	runner.confirmExit = func(empty func() (bool, error)) error {
+		// Termination really completes in this synthetic test. Inject uncertainty
+		// afterward so a retained private directory cannot contain a live child.
+		if err := waitForServerExit(empty); err != nil {
+			return err
+		}
+		return errors.New(rpcCanary)
+	}
+	_, updated, err := runner.Query(context.Background(), testAuth("account-a", "refresh-old", "2026-08-20T00:00:00Z"))
+	if err == nil || len(updated) != 0 || !strings.Contains(err.Error(), "cleanup failed") || strings.Contains(err.Error(), rpcCanary) {
+		t.Fatal("uncertain termination allowed recovery or exposed diagnostics")
+	}
+	if *child == nil || (*child).ProcessState == nil {
+		t.Fatal("synthetic root was not reaped")
+	}
+	for _, entry := range (*child).Env {
+		if strings.HasPrefix(entry, "CODEX_HOME=") {
+			home := strings.TrimPrefix(entry, "CODEX_HOME=")
+			defer os.RemoveAll(home)
+			info, err := os.Stat(home)
+			if err != nil || !info.IsDir() || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o700) {
+				t.Fatal("uncertain lifecycle did not retain a private home")
+			}
+			return
+		}
+	}
+	t.Fatal("synthetic home was not configured")
 }

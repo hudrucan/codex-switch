@@ -6,6 +6,62 @@ import Testing
 
 @Suite @MainActor
 struct AppModelTests {
+  @Test func ownedChildrenQuitOnlyTheirGUIAndWaitUntilEveryProcessIsGone() async {
+    let family =
+      #"[{"pid":4242,"command":"Codex"},{"pid":4243,"command":"Codex"},{"pid":4244,"command":"codex"}]"#
+    let children = #"[{"pid":4243,"command":"Codex"},{"pid":4244,"command":"codex"}]"#
+    let (model, executor, applications, _) = makeModel(
+      [
+        .init(command: .status, output: success(statusData(processes: family))),
+        .init(command: .status, output: success(statusData(processes: family))),
+        .init(command: .status, output: success(statusData(processes: children))),
+        .init(command: .status, output: success(statusData())),
+        .init(command: .use("personal"), output: switchOutput),
+        .init(command: .status, output: success(statusData(active: "b"))),
+      ], quitPollAttempts: 2)
+    applications.ownerPIDs = [4243: 4242, 4244: 4242]
+    applications.exitOnQuit = true
+    await model.beginSwitch(accountID: "b")
+    #expect(model.phase == .awaitingQuit)
+    await model.confirmQuit()
+    #expect(applications.terminations.map { $0.0.process.pid } == [4242])
+    #expect(applications.terminations.map(\.1) == [false])
+    #expect(model.phase == .idle)
+    #expect(await executor.remaining == 0)
+  }
+
+  @Test func orphanedChildrenAreNeverForceQuitOrSwitchedPast() async {
+    let family = #"[{"pid":4242,"command":"Codex"},{"pid":4244,"command":"codex"}]"#
+    let children = #"[{"pid":4244,"command":"codex"}]"#
+    let (model, executor, applications, _) = makeModel([
+      .init(command: .status, output: success(statusData(processes: family))),
+      .init(command: .status, output: success(statusData(processes: family))),
+      .init(command: .status, output: success(statusData(processes: children))),
+    ])
+    applications.ownerPIDs = [4244: 4242]
+    applications.exitOnQuit = true
+    await model.beginSwitch(accountID: "b")
+    await model.confirmQuit()
+    #expect(model.phase == .awaitingManualExit)
+    await model.confirmForceQuit()
+    #expect(applications.terminations.map { $0.0.process.pid } == [4242])
+    #expect(await executor.commands.allSatisfy { $0 == .status })
+    #expect(await executor.remaining == 0)
+  }
+
+  @Test func unrelatedTerminalStillBlocksQuittingVerifiedGUIFamily() async {
+    let mixed =
+      #"[{"pid":4242,"command":"Codex"},{"pid":4244,"command":"codex"},{"pid":4343,"command":"codex"}]"#
+    let (model, executor, applications, _) = makeModel([
+      .init(command: .status, output: success(statusData(processes: mixed)))
+    ])
+    applications.ownerPIDs = [4244: 4242]
+    await model.beginSwitch(accountID: "b")
+    #expect(model.phase == .awaitingManualExit)
+    #expect(applications.terminations.isEmpty)
+    #expect(await executor.commands == [.status])
+  }
+
   @Test func eachForceTargetRequiresAnImmediateStatusRead() async {
     let two = #"[{"pid":4242,"command":"Codex"},{"pid":4243,"command":"Codex"}]"#
     let second = #"[{"pid":4243,"command":"Codex"}]"#

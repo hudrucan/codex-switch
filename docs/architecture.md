@@ -60,6 +60,20 @@ Opening its menu reads cached status only. Explicit Refresh Usage calls
 `codex-switch account list --refresh --json` and reloads status; failed reads or
 refreshes retain the last successful view. No background polling is performed.
 
+On Unix, process discovery uses the `ps` short executable-name column (`ucomm`)
+so macOS path-column truncation cannot turn `ChatGPT` into `Ch`. The public
+process view preserves the case distinction between GUI names and terminal
+`codex`. GUI termination still requires native bundle identity and launch-date
+verification. Native ownership lookup may route a helper or bundled `codex`
+worker to that GUI only when its full ancestry is stable, all executable paths
+resolve inside the GUI bundle, and none has a controlling terminal. Ancestry,
+executable paths, process start times and native app identity are reverified.
+Only the deduplicated GUI roots receive termination requests; children are never
+signaled directly. Previously observed children that briefly outlive the GUI
+are only waited on. An orphan left after the bounded wait, an independent CLI,
+or unverifiable metadata requires manual closure; switching still requires an
+empty fresh CLI process list.
+
 For supported GUI apps, switching follows explicit Quit confirmation, native
 graceful termination, and bounded CLI status verification. If Codex remains,
 Force Quit requires a second confirmation and fresh CLI/native app identity

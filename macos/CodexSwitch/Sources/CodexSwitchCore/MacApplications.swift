@@ -28,20 +28,27 @@ public final class MacApplications: ApplicationControlling {
   public init(bundleIdentifiers: [String]) { self.bundleIdentifiers = bundleIdentifiers }
 
   public func identify(_ process: CodexProcess) -> ApplicationTarget? {
-    // This is UI routing only. The CLI remains the source of process classification.
-    guard ["Codex", "ChatGPT"].contains(process.command),
-      process.pid > 0, process.pid != ProcessInfo.processInfo.processIdentifier,
-      let application = NSRunningApplication(processIdentifier: process.pid),
-      !application.isTerminated,
-      application.activationPolicy != .prohibited,
+    GUIProcessResolver(record: ProcessRecord.read, application: applicationRecord).resolve(process)
+  }
+
+  private func applicationRecord(_ pid: Int32) -> GUIApplicationRecord? {
+    guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier,
+      let application = NSRunningApplication(processIdentifier: pid),
+      !application.isTerminated, application.activationPolicy != .prohibited,
       let bundleID = application.bundleIdentifier, bundleIdentifiers.contains(bundleID),
-      let launched = application.launchDate
+      let launched = application.launchDate, let bundleURL = application.bundleURL,
+      let executableURL = application.executableURL,
+      ["Codex", "ChatGPT"].contains(executableURL.lastPathComponent)
     else { return nil }
+    let process = CodexProcess(pid: pid, command: executableURL.lastPathComponent)
     let target = ApplicationTarget(
       process: process, bundleIdentifier: bundleID, launchDate: launched)
     knownApplications = knownApplications.filter { !$0.value.isTerminated }
     if knownApplications[target] == nil { knownApplications[target] = application }
-    return target
+    return GUIApplicationRecord(
+      target: target,
+      bundlePath: bundleURL.resolvingSymlinksInPath().standardizedFileURL.path,
+      executablePath: executableURL.resolvingSymlinksInPath().standardizedFileURL.path)
   }
 
   public func requestTermination(_ target: ApplicationTarget, force: Bool) -> Bool {

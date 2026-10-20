@@ -159,7 +159,8 @@ public final class AppModel: ObservableObject {
   private func prepareQuit(_ latest: UIStatus) {
     let identified = latest.codexProcesses.compactMap { applications.identify($0) }
     if identified.count == latest.codexProcesses.count {
-      targets = identified
+      var seen: Set<ApplicationTarget> = []
+      targets = identified.filter { seen.insert($0).inserted }
       phase = .awaitingQuit
     } else {
       targets = []
@@ -169,6 +170,8 @@ public final class AppModel: ObservableObject {
 
   private func terminateConfirmed(force: Bool) async {
     let consented = targets
+    var observedProcesses: Set<CodexProcess> = []
+    var guiStillRunning = true
     do {
       for target in consented {
         // Read immediately before EACH termination, never from the consent snapshot.
@@ -189,6 +192,7 @@ public final class AppModel: ObservableObject {
           prepareQuit(latest)
           return
         }
+        observedProcesses.formUnion(latest.codexProcesses)
         if current.contains(target) {
           _ = applications.requestTermination(target, force: force)
         }
@@ -204,16 +208,25 @@ public final class AppModel: ObservableObject {
           return
         }
         let current = latest.codexProcesses.compactMap { applications.identify($0) }
-        guard current.count == latest.codexProcesses.count,
-          current.allSatisfy({ consented.contains($0) })
-        else {
+        guard current.allSatisfy({ consented.contains($0) }) else {
           prepareQuit(latest)
           return
+        }
+        guiStillRunning = current.count == latest.codexProcesses.count
+        if guiStillRunning {
+          observedProcesses.formUnion(latest.codexProcesses)
+        } else {
+          guard latest.codexProcesses.allSatisfy({ observedProcesses.contains($0) }) else {
+            prepareQuit(latest)
+            return
+          }
+          // Previously observed children can briefly outlive their GUI parent.
+          // Only wait: never signal an orphan or switch while the CLI sees it.
         }
         try await wait()
       }
       // A second explicit confirmation is required; never escalate automatically.
-      phase = force ? .awaitingManualExit : .awaitingForceQuit
+      phase = force || !guiStillRunning ? .awaitingManualExit : .awaitingForceQuit
     } catch { finishWithError(error) }
   }
 

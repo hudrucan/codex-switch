@@ -110,18 +110,25 @@ final class ApplicationDouble: ApplicationControlling {
   var launchDate = Date(timeIntervalSince1970: 100)
   var terminations: [(ApplicationTarget, Bool)] = []
   var failOpen = false
+  var ownerPIDs: [Int32: Int32] = [:]
+  var exitOnQuit = false
+  var unavailableOwners: Set<Int32> = []
 
   init(trace: ActionTrace) { self.trace = trace }
 
   func identify(_ process: CodexProcess) -> ApplicationTarget? {
-    guard process.command == "Codex" else { return nil }
+    guard let pid = ownerPIDs[process.pid] ?? (process.command == "Codex" ? process.pid : nil),
+      !unavailableOwners.contains(pid)
+    else { return nil }
     return ApplicationTarget(
-      process: process, bundleIdentifier: "synthetic.codex", launchDate: launchDate)
+      process: CodexProcess(pid: pid, command: "Codex"),
+      bundleIdentifier: "synthetic.codex", launchDate: launchDate)
   }
 
   func requestTermination(_ target: ApplicationTarget, force: Bool) -> Bool {
     terminations.append((target, force))
     trace.append(force ? "force" : "quit")
+    if exitOnQuit { unavailableOwners.insert(target.process.pid) }
     return true
   }
 
@@ -132,14 +139,15 @@ final class ApplicationDouble: ApplicationControlling {
 }
 
 @MainActor
-func makeModel(_ steps: [ScriptedExecutor.Step]) -> (
+func makeModel(_ steps: [ScriptedExecutor.Step], quitPollAttempts: Int = 1) -> (
   AppModel, ScriptedExecutor, ApplicationDouble, ActionTrace
 ) {
   let trace = ActionTrace()
   let executor = ScriptedExecutor(steps, trace: trace)
   let applications = ApplicationDouble(trace: trace)
   let model = AppModel(
-    client: CLIClient(executor: executor), applications: applications, quitPollAttempts: 1, wait: {}
+    client: CLIClient(executor: executor), applications: applications,
+    quitPollAttempts: quitPollAttempts, wait: {}
   )
   return (model, executor, applications, trace)
 }

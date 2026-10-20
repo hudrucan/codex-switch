@@ -98,6 +98,17 @@ public struct CachedUsage: Decodable, Equatable, Sendable {
   public let error: String?
 
   public var isStaleOrUnavailable: Bool { status != "fresh" }
+
+  var fetchedDate: Date? {
+    guard let fetchedAt else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let fractional = formatter.date(from: fetchedAt)
+    formatter.formatOptions = [.withInternetDateTime]
+    guard let date = fractional ?? formatter.date(from: fetchedAt), date.timeIntervalSince1970 > 0
+    else { return nil }
+    return date
+  }
 }
 
 public struct RateLimits: Decodable, Equatable, Sendable {

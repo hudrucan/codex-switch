@@ -9,7 +9,7 @@ import Testing
 struct MenuLayoutTests {
   @Test(arguments: [2, 8])
   func accountListHasRoomForVisibleQuotaRows(accountCount: Int) async throws {
-    var root = try #require(JSONSerialization.jsonObject(with: statusData()) as? [String: Any])
+    var root = try #require(JSONSerialization.jsonObject(with: freshStatusData()) as? [String: Any])
     var accounts = try #require(root["accounts"] as? [[String: Any]])
     accounts[1]["usage"] = accounts[0]["usage"]
     for index in 2..<accountCount {
@@ -34,17 +34,19 @@ struct MenuLayoutTests {
   @Test(arguments: [false, true])
   func inFlightProgressDoesNotResizeMenu(switching: Bool) async throws {
     let gate = ExecutionGate()
-    var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(statusData()))]
+    var steps: [ScriptedExecutor.Step] = [
+      .init(command: .status, output: success(freshStatusData()))
+    ]
     if switching {
       steps += [
-        .init(command: .status, output: success(statusData())),
+        .init(command: .status, output: success(freshStatusData())),
         .init(command: .use("personal"), output: switchOutput, gate: gate),
-        .init(command: .status, output: success(statusData(active: "b"))),
+        .init(command: .status, output: success(freshStatusData(active: "b"))),
       ]
     } else {
       steps += [
         .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
-        .init(command: .status, output: success(statusData())),
+        .init(command: .status, output: success(freshStatusData())),
       ]
     }
     let (model, _, _, _) = makeModel(steps)
@@ -72,7 +74,7 @@ struct MenuLayoutTests {
         "{\"pid\":\(pid),\"command\":\"Codex\"}"
       }.joined(separator: ",") + "]"
     let (model, _, _, _) = makeModel([
-      .init(command: .status, output: success(statusData(processes: processes)))
+      .init(command: .status, output: success(freshStatusData(processes: processes)))
     ])
     await model.beginSwitch(accountID: "b")
     #expect(model.phase == .awaitingQuit)

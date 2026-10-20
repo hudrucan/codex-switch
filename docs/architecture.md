@@ -64,9 +64,21 @@ fail without fallback. These checks trust the current user; they do not verify
 a code signature.
 
 `macos/CodexSwitch` contains Codex Switch, a SwiftUI `MenuBarExtra` agent app.
-Opening its menu reads cached status only. Explicit Refresh Usage calls
-`codex-switch account list --refresh --json` and reloads status; failed reads or
-refreshes retain the last successful view. No background polling is performed.
+Opening its menu reads cached status first. If any account has no valid cache
+timestamp, a future timestamp, or a snapshot older than five minutes, that open
+event can invoke `codex-switch account list --refresh --json` and reload status.
+An empty account list never triggers refresh. Closing the menu before the status
+read finishes prevents automatic refresh; an already-started refresh finishes
+normally so CLI credential recovery and process cleanup remain intact.
+
+Automatic and explicit Refresh Usage share the app's operation exclusion and a
+60-second cooldown from completion. Consecutive refresh or status-reload failures
+delay the next attempt by one, two, then five minutes (capped); a successful
+refresh and reload resets that sequence. The UI retains its previous successful
+data on failure. Deadlines are checked on user actions/menu opens, without timers,
+queued retries, or background polling. These limits are in memory per app process
+and reset on relaunch; independent CLI invocations retain existing behavior and
+cross-process locks. Passing a cached reset time never fabricates fresh quota.
 
 On Unix, process discovery uses the `ps` short executable-name column (`ucomm`)
 so macOS path-column truncation cannot turn `ChatGPT` into `Ch`. The public

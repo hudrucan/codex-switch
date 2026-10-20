@@ -12,17 +12,23 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var phase: Phase = .idle
   @Published public private(set) var errorMessage: String?
   @Published public private(set) var pendingAlias: String?
+  @Published public private(set) var refreshNotice: String?
 
   private let client: any CLIClientProtocol
   private let applications: any ApplicationControlling
   private let quitPollAttempts: Int
   private let wait: @Sendable () async throws -> Void
+  private let now: () -> Date
+  private var menuIsOpen = false
+  private var nextRefreshAt: Date?
+  private var refreshFailures = 0
   private var pendingID: String?
   private var targets: [ApplicationTarget] = []
 
   public init(
     client: any CLIClientProtocol, applications: any ApplicationControlling,
     quitPollAttempts: Int = 12,
+    now: @escaping () -> Date = { Date() },
     wait: @escaping @Sendable () async throws -> Void = {
       try await Task.sleep(for: .milliseconds(500))
     }
@@ -31,6 +37,7 @@ public final class AppModel: ObservableObject {
     self.applications = applications
     self.quitPollAttempts = max(1, quitPollAttempts)
     self.wait = wait
+    self.now = now
   }
 
   public var isBusy: Bool { phase != .idle }
@@ -51,19 +58,41 @@ public final class AppModel: ObservableObject {
   }
 
   public func menuOpened() async {
+    guard !Task.isCancelled else { return }
+    menuIsOpen = true
     guard !isBusy else { return }
     phase = .loading
-    defer { phase = .idle }
     do {
       status = try await client.status()
       errorMessage = nil
     } catch {
       show(error, fallback: "Cached status could not be read. Previous menu data is retained.")
+      phase = .idle
+      return
     }
+    phase = .idle
+    guard menuIsOpen, !Task.isCancelled, let status,
+      status.accounts.contains(where: { account in
+        guard let fetched = account.usage?.fetchedDate else { return true }
+        return now().timeIntervalSince(fetched) > 5 * 60 || fetched > now()
+      })
+    else { return }
+    await refreshUsage()
   }
+
+  public func menuClosed() { menuIsOpen = false }
 
   public func refreshUsage() async {
     guard !isBusy else { return }
+    if let nextRefreshAt, now() < nextRefreshAt {
+      let formatter = DateFormatter()
+      formatter.locale = Locale(identifier: "en_US_POSIX")
+      formatter.dateFormat = "h:mm:ss a"
+      refreshNotice = "Refresh available after \(formatter.string(from: nextRefreshAt))."
+      return
+    }
+    refreshNotice = nil
+    nextRefreshAt = now().addingTimeInterval(60)
     phase = .refreshing
     defer { phase = .idle }
     do {
@@ -71,7 +100,16 @@ public final class AppModel: ObservableObject {
       let updated = try await client.status()
       status = updated
       errorMessage = nil
-    } catch { show(error, fallback: "Usage refresh failed. Previous menu data is retained.") }
+      refreshFailures = 0
+      nextRefreshAt = now().addingTimeInterval(60)
+    } catch {
+      refreshFailures = min(refreshFailures + 1, 3)
+      let delay: TimeInterval = refreshFailures == 1 ? 60 : (refreshFailures == 2 ? 120 : 300)
+      nextRefreshAt = now().addingTimeInterval(delay)
+      show(error, fallback: "Usage refresh failed. Previous menu data is retained.")
+      let minutes = Int(delay / 60)
+      refreshNotice = "Try refreshing again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
+    }
   }
 
   public func beginSwitch(accountID: String) async {

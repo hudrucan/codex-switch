@@ -29,6 +29,22 @@ func statusData(processes: String = "[]", state: String = "in_sync", active: Str
     """.utf8)
 }
 
+func freshStatusData(
+  processes: String = "[]", state: String = "in_sync", active: String = "a",
+  fetchedAt: Date = Date()
+) -> Data {
+  var root =
+    try! JSONSerialization.jsonObject(
+      with: statusData(processes: processes, state: state, active: active)) as! [String: Any]
+  var accounts = root["accounts"] as! [[String: Any]]
+  var usage = accounts[0]["usage"] as! [String: Any]
+  usage["status"] = "fresh"
+  usage["fetchedAt"] = ISO8601DateFormatter().string(from: fetchedAt)
+  for index in accounts.indices { accounts[index]["usage"] = usage }
+  root["accounts"] = accounts
+  return try! JSONSerialization.data(withJSONObject: root)
+}
+
 func success(_ data: Data) -> CommandOutput {
   CommandOutput(stdout: data, stderr: Data(), exitStatus: 0)
 }
@@ -140,7 +156,10 @@ final class ApplicationDouble: ApplicationControlling {
 }
 
 @MainActor
-func makeModel(_ steps: [ScriptedExecutor.Step], quitPollAttempts: Int = 1) -> (
+func makeModel(
+  _ steps: [ScriptedExecutor.Step], quitPollAttempts: Int = 1,
+  now: @escaping () -> Date = { Date() }
+) -> (
   AppModel, ScriptedExecutor, ApplicationDouble, ActionTrace
 ) {
   let trace = ActionTrace()
@@ -148,7 +167,7 @@ func makeModel(_ steps: [ScriptedExecutor.Step], quitPollAttempts: Int = 1) -> (
   let applications = ApplicationDouble(trace: trace)
   let model = AppModel(
     client: CLIClient(executor: executor), applications: applications,
-    quitPollAttempts: quitPollAttempts, wait: {}
+    quitPollAttempts: quitPollAttempts, now: now, wait: {}
   )
   return (model, executor, applications, trace)
 }

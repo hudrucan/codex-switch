@@ -12,12 +12,12 @@ struct AppModelTests {
     let children = #"[{"pid":4243,"command":"Codex"},{"pid":4244,"command":"codex"}]"#
     let (model, executor, applications, _) = makeModel(
       [
-        .init(command: .status, output: success(statusData(processes: family))),
-        .init(command: .status, output: success(statusData(processes: family))),
-        .init(command: .status, output: success(statusData(processes: children))),
-        .init(command: .status, output: success(statusData())),
+        .init(command: .status, output: success(freshStatusData(processes: family))),
+        .init(command: .status, output: success(freshStatusData(processes: family))),
+        .init(command: .status, output: success(freshStatusData(processes: children))),
+        .init(command: .status, output: success(freshStatusData())),
         .init(command: .use("personal"), output: switchOutput),
-        .init(command: .status, output: success(statusData(active: "b"))),
+        .init(command: .status, output: success(freshStatusData(active: "b"))),
       ], quitPollAttempts: 2)
     applications.ownerPIDs = [4243: 4242, 4244: 4242]
     applications.exitOnQuit = true
@@ -34,9 +34,9 @@ struct AppModelTests {
     let family = #"[{"pid":4242,"command":"Codex"},{"pid":4244,"command":"codex"}]"#
     let children = #"[{"pid":4244,"command":"codex"}]"#
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData(processes: family))),
-      .init(command: .status, output: success(statusData(processes: family))),
-      .init(command: .status, output: success(statusData(processes: children))),
+      .init(command: .status, output: success(freshStatusData(processes: family))),
+      .init(command: .status, output: success(freshStatusData(processes: family))),
+      .init(command: .status, output: success(freshStatusData(processes: children))),
     ])
     applications.ownerPIDs = [4244: 4242]
     applications.exitOnQuit = true
@@ -53,7 +53,7 @@ struct AppModelTests {
     let mixed =
       #"[{"pid":4242,"command":"Codex"},{"pid":4244,"command":"codex"},{"pid":4343,"command":"codex"}]"#
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData(processes: mixed)))
+      .init(command: .status, output: success(freshStatusData(processes: mixed)))
     ])
     applications.ownerPIDs = [4244: 4242]
     await model.beginSwitch(accountID: "b")
@@ -66,15 +66,15 @@ struct AppModelTests {
     let two = #"[{"pid":4242,"command":"Codex"},{"pid":4243,"command":"Codex"}]"#
     let second = #"[{"pid":4243,"command":"Codex"}]"#
     let (model, executor, applications, trace) = makeModel([
-      .init(command: .status, output: success(statusData(processes: two))),
-      .init(command: .status, output: success(statusData(processes: two))),
-      .init(command: .status, output: success(statusData(processes: two))),
-      .init(command: .status, output: success(statusData(processes: two))),
-      .init(command: .status, output: success(statusData(processes: two))),
-      .init(command: .status, output: success(statusData(processes: second))),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData(processes: two))),
+      .init(command: .status, output: success(freshStatusData(processes: two))),
+      .init(command: .status, output: success(freshStatusData(processes: two))),
+      .init(command: .status, output: success(freshStatusData(processes: two))),
+      .init(command: .status, output: success(freshStatusData(processes: two))),
+      .init(command: .status, output: success(freshStatusData(processes: second))),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: switchOutput),
-      .init(command: .status, output: success(statusData(active: "b"))),
+      .init(command: .status, output: success(freshStatusData(active: "b"))),
     ])
     await model.beginSwitch(accountID: "b")
     await model.confirmQuit()
@@ -90,11 +90,11 @@ struct AppModelTests {
 
   @Test func failedForceQuitNeverSwitchesOrEscalatesAgain() async {
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
     ])
     await model.beginSwitch(accountID: "b")
     await model.confirmQuit()
@@ -107,8 +107,10 @@ struct AppModelTests {
   }
 
   @Test func aliasIDCollisionStopsBeforeQuitting() async throws {
-    let collision = try #require(String(data: statusData(processes: guiProcesses), encoding: .utf8))
-      .replacingOccurrences(of: "\"alias\":\"personal\"", with: "\"alias\":\"a\"")
+    let collision = try #require(
+      String(data: freshStatusData(processes: guiProcesses), encoding: .utf8)
+    )
+    .replacingOccurrences(of: "\"alias\":\"personal\"", with: "\"alias\":\"a\"")
     let (model, executor, applications, _) = makeModel([
       .init(command: .status, output: success(Data(collision.utf8)))
     ])
@@ -121,7 +123,7 @@ struct AppModelTests {
 
   @Test func openingMenuOnlyReadsCachedStatus() async {
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData()))
+      .init(command: .status, output: success(freshStatusData()))
     ])
     await model.menuOpened()
     #expect(await executor.commands.map(\.arguments) == [["ui", "status", "--json"]])
@@ -132,9 +134,9 @@ struct AppModelTests {
 
   @Test func manualRefreshThenStatus() async throws {
     let (model, executor, _, _) = makeModel([
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
     ])
     await model.menuOpened()
     await model.refreshUsage()
@@ -148,7 +150,9 @@ struct AppModelTests {
 
   @Test(arguments: [false, true])
   func failedRefreshOrStatusRetainsLastGoodState(statusFails: Bool) async throws {
-    var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(statusData()))]
+    var steps: [ScriptedExecutor.Step] = [
+      .init(command: .status, output: success(freshStatusData()))
+    ]
     steps.append(
       .init(
         command: .refreshUsage,
@@ -167,7 +171,7 @@ struct AppModelTests {
 
   @Test func failedMenuReadRetainsLastGoodState() async {
     let (model, _, _, _) = makeModel([
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .status, output: failedOutput()),
     ])
     await model.menuOpened()
@@ -179,11 +183,11 @@ struct AppModelTests {
 
   @Test func runningApplicationWaitsForConsentAndVerification() async {
     let (model, executor, applications, trace) = makeModel([
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: switchOutput),
-      .init(command: .status, output: success(statusData(active: "b"))),
+      .init(command: .status, output: success(freshStatusData(active: "b"))),
     ])
     await model.beginSwitch(accountID: "b")
     #expect(model.phase == .awaitingQuit)
@@ -202,13 +206,13 @@ struct AppModelTests {
 
   @Test func forceQuitRequiresSecondConfirmationAndFreshStatus() async {
     let (model, executor, applications, trace) = makeModel([
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: switchOutput),
-      .init(command: .status, output: success(statusData(active: "b"))),
+      .init(command: .status, output: success(freshStatusData(active: "b"))),
     ])
     await model.beginSwitch(accountID: "b")
     await model.confirmQuit()
@@ -227,17 +231,18 @@ struct AppModelTests {
   @Test(arguments: [false, true])
   func forceQuitNeverUsesStalePID(disappeared: Bool) async {
     var steps: [ScriptedExecutor.Step] = [
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
       .init(
-        command: .status, output: success(statusData(processes: disappeared ? "[]" : guiProcesses))),
+        command: .status,
+        output: success(freshStatusData(processes: disappeared ? "[]" : guiProcesses))),
     ]
     if disappeared {
       steps += [
-        .init(command: .status, output: success(statusData())),
+        .init(command: .status, output: success(freshStatusData())),
         .init(command: .use("personal"), output: switchOutput),
-        .init(command: .status, output: success(statusData(active: "b"))),
+        .init(command: .status, output: success(freshStatusData(active: "b"))),
       ]
     }
     let (model, executor, applications, _) = makeModel(steps)
@@ -253,10 +258,10 @@ struct AppModelTests {
 
   @Test func terminalProcessRequiresManualExitAndRetry() async {
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData(processes: terminalProcesses))),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData(processes: terminalProcesses))),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: switchOutput),
-      .init(command: .status, output: success(statusData(active: "b"))),
+      .init(command: .status, output: success(freshStatusData(active: "b"))),
     ])
     await model.beginSwitch(accountID: "b")
     #expect(model.phase == .awaitingManualExit)
@@ -272,9 +277,9 @@ struct AppModelTests {
 
   @Test func useRaceReturnsToQuitFlowWithoutBypass() async {
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: failedOutput()),
-      .init(command: .status, output: success(statusData(processes: guiProcesses))),
+      .init(command: .status, output: success(freshStatusData(processes: guiProcesses))),
     ])
     await model.beginSwitch(accountID: "b")
     #expect(model.phase == .awaitingQuit)
@@ -288,7 +293,7 @@ struct AppModelTests {
   @Test(arguments: ["unmanaged", "ambiguous", "credential_conflict"])
   func uncertainStateNeverSwitches(state: String) async {
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData(state: state)))
+      .init(command: .status, output: success(freshStatusData(state: state)))
     ])
     await model.beginSwitch(accountID: "b")
     #expect(model.phase == .idle)
@@ -302,7 +307,7 @@ struct AppModelTests {
     let gate = ExecutionGate()
     let (model, executor, applications, _) = makeModel([
       .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
     ])
     let refreshing = Task { await model.refreshUsage() }
     await gate.waitForEntry()
@@ -323,12 +328,12 @@ struct AppModelTests {
     let useGate = ExecutionGate()
     let reloadGate = ExecutionGate()
     let (model, executor, applications, _) = makeModel([
-      .init(command: .status, output: success(statusData())),
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
+      .init(command: .status, output: success(freshStatusData())),
       .init(command: .use("personal"), output: switchOutput, gate: useGate),
       .init(
         command: .status,
-        output: statusFails ? failedOutput() : success(statusData(active: "b")),
+        output: statusFails ? failedOutput() : success(freshStatusData(active: "b")),
         gate: reloadGate),
     ])
     await model.menuOpened()
@@ -370,10 +375,10 @@ struct AppModelTests {
   @Test(arguments: [false, true])
   func openingCodexReloadsCachedProcessStatus(statusFails: Bool) async {
     let (model, executor, _, trace) = makeModel([
-      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(freshStatusData())),
       .init(
         command: .status,
-        output: statusFails ? failedOutput() : success(statusData(processes: guiProcesses))),
+        output: statusFails ? failedOutput() : success(freshStatusData(processes: guiProcesses))),
     ])
     await model.menuOpened()
     let previous = model.status

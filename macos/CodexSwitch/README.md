@@ -66,15 +66,26 @@ times; each account's cache timestamp stays with that account.
 The menu follows the system appearance and keeps process details collapsed by
 default. Its monochrome icon shows a person with two switching arrows.
 
-Opening the menu while idle reads only `codex-switch ui status --json`. The
+Opening the menu while idle first reads `codex-switch ui status --json`. The
 menu labels usage as cached, shows its last fetch time, and distinguishes stale,
 partial, and unavailable data. Percentages show remaining quota, derived from
 the CLI's `usedPercent`. Unknown JSON fields are tolerated; status schemas other
 than version 1 are rejected. Unmanaged, ambiguous, conflicting, or unknown
 observations do not receive a safe active marker and block menu switching.
 
-Only **Refresh Usage** invokes
-`codex-switch account list --refresh --json`, followed by a status read. A
+If any account's cache is older than five minutes or its update time is missing,
+invalid, or in the future, opening the menu also refreshes usage once. Closing the
+menu before the cached read completes prevents this refresh. There are no timers
+or queued retries while the menu is open or closed, and passing a reset time
+never assumes quota has returned to 100%.
+
+Both this automatic refresh and **Refresh Usage** invoke
+`codex-switch account list --refresh --json`, followed by a status read. They share
+a 60-second cooldown from completion. Consecutive failures delay another attempt
+by one, two, then five minutes, capped at five; success resets the sequence.
+Reopen the menu or click Refresh Usage after the delay to try again. These limits
+last for the app process and do not throttle independent CLI commands.
+An already-started refresh finishes safely even if the menu closes. A
 command failure, per-account refresh error, or subsequent status error preserves
 the previous successful menu data. Operations and confirmation flows exclude
 concurrent refreshes and switches. The menu stays locked through the final cached

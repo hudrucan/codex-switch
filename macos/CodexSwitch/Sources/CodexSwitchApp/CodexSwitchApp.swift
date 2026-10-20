@@ -96,6 +96,11 @@ struct SwitchMenu: View {
         ) {
           Task { await model.refreshUsage() }
         }
+        if let notice = model.refreshNotice {
+          Text(notice).font(.system(size: 10)).foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10).padding(.bottom, 6)
+        }
         if model.errorMessage != nil || model.status == nil {
           MenuAction("Retry Status", symbol: "arrow.clockwise.circle") {
             Task { await model.menuOpened() }
@@ -114,7 +119,10 @@ struct SwitchMenu: View {
     .frame(width: 400)
     .disabled(model.progressLabel != nil)
     .background(Color(nsColor: .windowBackgroundColor))
-    .background(MenuOpenObserver { Task { await model.menuOpened() } })
+    .background(
+      MenuOpenObserver(
+        opened: { await model.menuOpened() }, closed: { model.menuClosed() })
+    )
     .onChange(of: model.canCancel) { awaitingConfirmation in
       if !awaitingConfirmation { showsProcessDetails = false }
     }
@@ -492,16 +500,26 @@ private struct MenuRowStyle: ButtonStyle {
 // Window-style MenuBarExtra content can survive being closed. Observe its actual
 // window becoming key instead of relying on SwiftUI view construction as "open".
 private struct MenuOpenObserver: NSViewRepresentable {
-  let opened: @MainActor () -> Void
+  let opened: @MainActor () async -> Void
+  let closed: @MainActor () -> Void
 
-  func makeNSView(context: Context) -> OpenView { OpenView(opened: opened) }
-  func updateNSView(_ view: OpenView, context: Context) { view.opened = opened }
+  func makeNSView(context: Context) -> OpenView { OpenView(opened: opened, closed: closed) }
+  func updateNSView(_ view: OpenView, context: Context) {
+    view.opened = opened
+    view.closed = closed
+  }
+
+  static func dismantleNSView(_ view: OpenView, coordinator: ()) { view.windowClosed() }
 
   final class OpenView: NSView {
-    var opened: @MainActor () -> Void
+    var opened: @MainActor () async -> Void
+    var closed: @MainActor () -> Void
 
-    init(opened: @escaping @MainActor () -> Void) {
+    private var openTask: Task<Void, Never>?
+
+    init(opened: @escaping @MainActor () async -> Void, closed: @escaping @MainActor () -> Void) {
       self.opened = opened
+      self.closed = closed
       super.init(frame: .zero)
     }
 
@@ -510,15 +528,27 @@ private struct MenuOpenObserver: NSViewRepresentable {
     override func viewDidMoveToWindow() {
       super.viewDidMoveToWindow()
       NotificationCenter.default.removeObserver(self)
+      windowClosed()
       guard let window else { return }
       NotificationCenter.default.addObserver(
         self, selector: #selector(windowOpened), name: NSWindow.didBecomeKeyNotification,
         object: window
       )
-      if window.isVisible { opened() }
+      for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+        NotificationCenter.default.addObserver(
+          self, selector: #selector(windowClosed), name: name, object: window)
+      }
+      if window.isVisible { windowOpened() }
     }
 
-    @objc private func windowOpened() { opened() }
+    @objc private func windowOpened() {
+      openTask?.cancel()
+      openTask = Task { await opened() }
+    }
+    @objc func windowClosed() {
+      openTask?.cancel()
+      closed()
+    }
 
     deinit { NotificationCenter.default.removeObserver(self) }
   }

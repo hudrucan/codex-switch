@@ -71,15 +71,7 @@ struct SwitchMenu: View {
           currentAccount(account)
         }
         savedAccounts(status)
-        if let account = activeAccount {
-          Label(UsagePresentation(account.usage).cacheLabel, systemImage: "clock")
-            .font(.system(size: 11))
-            .foregroundStyle(
-              account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange
-            )
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 18).padding(.top, 5).padding(.bottom, 14)
-        }
+
       } else if model.progressLabel == nil {
         noticeText("Status unavailable. Check the CLI configuration and retry.")
           .padding(.horizontal, 18).padding(.bottom, 14)
@@ -153,15 +145,18 @@ struct SwitchMenu: View {
         QuotaMeter(quota: usage.secondary)
       }
       .padding(.top, 18)
-      HStack {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
         Text("Banked resets").foregroundStyle(.secondary)
-        Spacer()
         Text(usage.bankedResetLabel).fontWeight(.medium).monospacedDigit()
       }
-      .font(.system(size: 11)).padding(.top, 14)
+      .font(.system(size: 11)).padding(.top, 10)
       .help("Cached earned manual rate-limit resets, separate from scheduled quota resets.")
+      Text(usage.compactCacheLabel).font(.system(size: 10))
+        .foregroundStyle(account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(usage.cacheLabel).padding(.top, 10)
     }
-    .padding(.horizontal, 18).padding(.bottom, 20)
+    .padding(.horizontal, 18).padding(.bottom, 16)
   }
 
   @ViewBuilder
@@ -205,35 +200,35 @@ struct SwitchMenu: View {
     return Button {
       Task { await model.beginSwitch(accountID: account.id) }
     } label: {
-      HStack(alignment: .top, spacing: 10) {
-        Text(String(account.alias.prefix(1)).uppercased())
-          .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-          .frame(width: 28, height: 28)
-          .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-        VStack(alignment: .leading, spacing: 5) {
-          HStack {
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(spacing: 10) {
+          Text(String(account.alias.prefix(1)).uppercased())
+            .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
+            .frame(width: 28, height: 28)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+          HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(account.alias).font(.system(size: 13, weight: .medium)).lineLimit(1)
-            Spacer(minLength: 4)
             if let plan = usage.plan {
               Text(plan).font(.system(size: 10)).foregroundStyle(.secondary)
             }
           }
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.right").font(.system(size: 11))
+            .foregroundStyle(.tertiary)
+        }
+        VStack(alignment: .leading, spacing: 5) {
           SavedQuotaRow(quota: usage.primary)
           SavedQuotaRow(quota: usage.secondary)
-          HStack {
-            Text("Banked resets")
-            Spacer(minLength: 4)
-            Text(usage.bankedResetLabel).monospacedDigit()
-          }
-          .font(.system(size: 10)).foregroundStyle(.secondary)
-          Text(usage.cacheLabel).font(.system(size: 10))
+          Text("Banked resets · \(usage.bankedResetCount.map(String.init) ?? "Unavailable")")
+            .foregroundStyle(.secondary)
+          Text(usage.compactCacheLabel)
             .foregroundStyle(
               account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange
             )
-            .lineLimit(1).help(usage.cacheLabel)
+            .help(usage.cacheLabel)
         }
-        Image(systemName: "chevron.right").font(.system(size: 11))
-          .foregroundStyle(.tertiary).padding(.top, 3)
+        .font(.system(size: 11))
+        .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 10).padding(.vertical, 10)
@@ -360,15 +355,11 @@ private struct SavedQuotaRow: View {
   let quota: QuotaPresentation
 
   var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      Text(quota.title).foregroundStyle(.secondary).frame(width: 42, alignment: .leading)
-      Text(quota.remaining.map { "\($0)% left" } ?? "Unavailable")
-        .monospacedDigit().frame(width: 62, alignment: .leading)
-      Spacer(minLength: 0)
-      Text(quota.resetLabel).foregroundStyle(.secondary).lineLimit(1)
-        .help(quota.resetLabel)
-    }
-    .font(.system(size: 10))
+    Text(
+      "\(quota.title) · \(quota.remaining.map { "\($0)% left" } ?? "Unavailable") · \(quota.compactResetLabel())"
+    )
+    .foregroundStyle(.secondary)
+    .help(quota.resetLabel)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(quota.accessibilityLabel)
   }
@@ -403,7 +394,7 @@ private struct QuotaMeter: View {
         Text("unavailable").font(.system(size: 11)).foregroundStyle(.secondary)
       }
       Text(quota.resetLabel).font(.system(size: 10)).foregroundStyle(.secondary)
-        .lineLimit(2).frame(height: 26, alignment: .topLeading)
+        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
         .help(quota.resetLabel)
     }
     .frame(maxWidth: .infinity)

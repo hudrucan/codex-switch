@@ -45,12 +45,24 @@ bundle's executable with `CODEX_SWITCH_CLI_PATH` set; running it will read the
 configured live account through the CLI, so development verification must use
 test doubles instead.
 
+The bundle includes `Resources/AppIcon.icns`, using the same mark as the menu
+bar. To regenerate it, run from `macos/CodexSwitch`:
+
+```sh
+mkdir -p .build
+xcrun swiftc -swift-version 6 -parse-as-library Sources/CodexSwitchApp/MenuBarIcon.swift scripts/render-app-icon.swift -o .build/render-app-icon
+.build/render-app-icon .build/AppIcon.iconset
+iconutil -c icns .build/AppIcon.iconset -o Resources/AppIcon.icns
+```
+
 ## Menu and switching behavior
 
 The menu shows the current account and saved accounts with quota percentages,
 local reset times, banked reset counts and cache labels. Missing reset times or
 counts show as unavailable rather than zero. Banked resets use the reported
 available count, independently of how many detail rows the service returns.
+Saved-account details use four left-aligned lines with compact 12-hour reset
+times; each account's cache timestamp stays with that account.
 The menu follows the system appearance and keeps process details collapsed by
 default. Its monochrome icon shows a person with two switching arrows.
 

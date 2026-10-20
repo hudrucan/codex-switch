@@ -36,6 +36,25 @@
 - `atomicfile` publishes complete files and refuses symlink destinations.
 - `doctor` reports only redacted, non-secret local facts.
 
+## Native UI boundary
+
+The native UI consumes public JSON through short-lived CLI commands. It never
+reads the vault, live authentication, switcher state, usage cache files, or
+operating-system credential stores directly. `ui status --json` returns
+`schemaVersion: 1`, an `accounts` array using the existing public account and
+cached usage views, the unchanged public `observation`, and a `codexProcesses`
+array containing only `pid` and `command`. Empty arrays remain arrays.
+
+This status command uses read-only observation and the usage service's cache
+API. It does not refresh usage, start an App Server, recover journals, or write
+storage. Usage retains its freshness status and fetch timestamp. The response
+is a best-effort snapshot without mutation locks; process detection failure
+returns a redacted error instead of an apparently safe empty list.
+
+Switching requires explicit user action through the normal guarded
+`codex-switch use <alias> --json` command, without `--allow-running`. That command
+rechecks safety and remains the final mutation authority.
+
 ## Locking and mutation model
 
 All vault writers acquire `<vault path>.lock`. Operations using live

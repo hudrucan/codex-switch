@@ -25,6 +25,7 @@ import (
 	"github.com/SilkageNet/codex-switch/internal/doctor"
 	"github.com/SilkageNet/codex-switch/internal/filelock"
 	"github.com/SilkageNet/codex-switch/internal/launcher"
+	"github.com/SilkageNet/codex-switch/internal/process"
 	"github.com/SilkageNet/codex-switch/internal/secretstore"
 	appstate "github.com/SilkageNet/codex-switch/internal/state"
 	"github.com/SilkageNet/codex-switch/internal/switcher"
@@ -47,6 +48,7 @@ type Options struct {
 
 	runtimeLoader func(bool) (runtimeState, error)
 	login         func(bool) (authschema.Document, error)
+	detectCodex   func() ([]process.Info, error)
 }
 
 type runtimeState struct {
@@ -108,6 +110,7 @@ func NewCommand(version string, provenance ...cliupdate.Provenance) *cobra.Comma
 		newInitCommand(options),
 		newCurrentCommand(options),
 		newStatusCommand(options),
+		newUICommand(options),
 		newSyncCommand(options),
 		newDoctorCommand(options),
 		newUseCommand(options),

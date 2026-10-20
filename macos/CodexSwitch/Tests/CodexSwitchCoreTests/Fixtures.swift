@@ -17,8 +17,9 @@ func statusData(processes: String = "[]", state: String = "in_sync", active: Str
         {"id":"a","alias":"work","accountId":"account-a","source":"synthetic",
          "workspaceId":"workspace-a","active":\(active == "a"),
          "usage":{"status":"stale","fetchedAt":"2026-10-20T01:02:03.123456789Z","planType":"pro",
-           "rateLimits":{"rateLimits":{"primary":{"usedPercent":38,"windowDurationMins":300},
-             "secondary":{"usedPercent":59,"windowDurationMins":10080}},"futureField":true}}},
+           "rateLimits":{"rateLimits":{"primary":{"usedPercent":38,"windowDurationMins":300,"resetsAt":1792483200},
+             "secondary":{"usedPercent":59,"windowDurationMins":10080,"resetsAt":1792742400}},
+             "rateLimitResetCredits":{"availableCount":2},"futureField":true}}},
         {"id":"b","alias":"personal","accountId":"account-b","source":"synthetic","active":\(active == "b")}
       ],
       "observation":{"state":"\(state)","hasLive":true,"managed":true,"needsSync":false,

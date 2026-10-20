@@ -129,7 +129,12 @@ public struct CachedUsage: Decodable, Equatable, Sendable {
 public struct RateLimits: Decodable, Equatable, Sendable {
   public let rateLimits: RateLimit
   public let rateLimitsByLimitId: [String: RateLimit]?
+  public let rateLimitResetCredits: ResetCredits?
   public var main: RateLimit { rateLimitsByLimitId?["codex"] ?? rateLimits }
+}
+
+public struct ResetCredits: Decodable, Equatable, Sendable {
+  public let availableCount: Int64?
 }
 
 public struct RateLimit: Decodable, Equatable, Sendable {

@@ -50,10 +50,17 @@ test doubles instead.
 
 ## Menu and switching behavior
 
-The menu-bar icon uses two overlapping squares. The menu highlights the observed
+The monochrome menu-bar icon shows a person with two switching arrows. The menu
+highlights the observed
 current account with a centered plan badge and two compact quota meters; saved
-accounts appear below with their own cache labels. It follows the system light
-or dark appearance.
+accounts appear below with their own quota percentages, reset times, banked
+counts and cache labels. The 400-point menu keeps process details collapsed by
+default in a bounded scroll area. It follows the system light
+or dark appearance. Each quota meter shows its cached reset date and local time.
+Banked resets use `rateLimitResetCredits.availableCount`, independently of how
+many grant detail rows the service returns. Missing reset times/counts are
+unavailable, not estimated or treated as zero. These values share the displayed
+cache freshness and never trigger a query by themselves.
 
 Opening the menu while idle reads only `codex-switch ui status --json`. The
 menu labels usage as cached, shows its last fetch time, and distinguishes stale,
@@ -67,9 +74,11 @@ Only **Refresh Usage** invokes
 command failure, per-account refresh error, or subsequent status error preserves
 the previous successful menu data. Operations and confirmation flows exclude
 concurrent refreshes and switches. The menu stays locked through the final cached
-status read after switching. Progress overlays the existing content without
-resizing the menu; fast operations do not flash a spinner. Errors are fixed
-local messages; raw stderr and decoding diagnostics are never displayed or logged.
+status read after switching. Refresh progress replaces the icon and label in the
+Refresh Usage row; other operations show a small spinner and status in the
+footer. Both keep the menu height stable and leave cached account data visible
+without an overlay. Errors are fixed local messages; raw stderr and decoding
+diagnostics are never displayed or logged.
 
 Choosing another account first obtains fresh status. With no Codex process
 reported, it calls exactly `codex-switch use <alias> --json`. Aliases beginning
@@ -81,6 +90,10 @@ For CLI-reported `Codex`/`ChatGPT` GUI applications with a supported native bund
 identity and launch date, the app asks for **Quit Codex & Switch** confirmation.
 It re-reads process status before each native termination request, checks app
 instance identity, and requests graceful termination with `NSRunningApplication`.
+It groups verified helpers and bundled `codex` workers by GUI owner, checking
+stable native ancestry, executable paths inside the app bundle, start times
+and absence of a controlling terminal. It sends a request only once per GUI,
+never to a worker PID. Children that briefly outlive the GUI are only waited on.
 It then checks status at most 12 times with a 500 ms wait between checks. Cached
 status child processes receive a termination request after 5 seconds; mutating
 CLI commands are allowed to finish under their own lifecycle controls.
@@ -88,7 +101,8 @@ CLI commands are allowed to finish under their own lifecycle controls.
 If Codex remains, **Force Quit Codex** requires a separate explicit confirmation
 and warns about unsaved work. Each target must still appear in freshly read CLI
 status and have the same native app instance, bundle identifier, and launch
-date. A new process or reused PID requires fresh consent. Only after the CLI
+date. A new GUI instance or reused GUI PID requires fresh consent. Independent
+terminal processes still require manual closure. Only after the CLI
 reports no Codex processes does the normal guarded switch run. Terminal `codex`
 processes or unverifiable applications are never signaled: the user closes them
 and chooses **Retry Switch**. Cancel is available while awaiting confirmation;

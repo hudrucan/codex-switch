@@ -1,4 +1,5 @@
 import CodexSwitchCore
+import Foundation
 
 // Presentation only: the CLI remains the owner of quota and cache state.
 struct UsagePresentation {
@@ -7,6 +8,11 @@ struct UsagePresentation {
   let secondary: QuotaPresentation
   let summary: String
   let cacheLabel: String
+  let bankedResetCount: Int64?
+
+  var bankedResetLabel: String {
+    bankedResetCount.map { "\($0) available" } ?? "Unavailable"
+  }
 
   init(_ usage: CachedUsage?) {
     let available = usage?.status == "fresh" || usage?.status == "stale"
@@ -19,8 +25,12 @@ struct UsagePresentation {
       guard let remaining = quota.remaining else { return nil }
       return "\(quota.title) \(remaining)% left"
     }
-    summary = ([plan].compactMap { $0 } + (quotas.isEmpty ? ["Usage unavailable"] : quotas))
-      .joined(separator: " · ")
+    let reportedCount = available ? usage?.rateLimits?.rateLimitResetCredits?.availableCount : nil
+    bankedResetCount = reportedCount.flatMap { $0 >= 0 ? $0 : nil }
+    let banked = bankedResetCount.map { "\($0) banked resets" }
+    summary =
+      ([plan].compactMap { $0 } + (quotas.isEmpty ? ["Usage unavailable"] : quotas)
+      + [banked].compactMap { $0 }).joined(separator: " · ")
 
     var labels = [
       available ? (usage?.status == "stale" ? "Stale cache" : "Cached") : "Usage unavailable"
@@ -39,6 +49,12 @@ struct UsagePresentation {
 struct QuotaPresentation {
   let title: String
   let remaining: Int?
+  let resetAt: Date?
+
+  var resetLabel: String {
+    guard let resetAt else { return "Reset time unavailable" }
+    return "Resets " + resetAt.formatted(date: .abbreviated, time: .shortened)
+  }
 
   init(window: QuotaWindow?, fallback: String) {
     switch window?.windowDurationMins {
@@ -48,10 +64,16 @@ struct QuotaPresentation {
     default: title = fallback
     }
     remaining = window.map { 100 - min(100, max(0, $0.usedPercent)) }
+    // Reject missing, nonpositive and out-of-calendar-range Unix timestamps.
+    if let seconds = window?.resetsAt, seconds > 0, seconds <= 253_402_300_799 {
+      resetAt = Date(timeIntervalSince1970: Double(seconds))
+    } else {
+      resetAt = nil
+    }
   }
 
   var accessibilityLabel: String {
-    if let remaining { return "\(title), \(remaining)% remaining, cached" }
+    if let remaining { return "\(title), \(remaining)% remaining, cached. \(resetLabel)" }
     return "\(title), usage unavailable"
   }
 }

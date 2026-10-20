@@ -11,6 +11,7 @@ struct MenuLayoutTests {
   func accountListHasRoomForVisibleQuotaRows(accountCount: Int) async throws {
     var root = try #require(JSONSerialization.jsonObject(with: statusData()) as? [String: Any])
     var accounts = try #require(root["accounts"] as? [[String: Any]])
+    accounts[1]["usage"] = accounts[0]["usage"]
     for index in 2..<accountCount {
       var account = accounts[1]
       account["id"] = "synthetic-\(index)"
@@ -30,22 +31,54 @@ struct MenuLayoutTests {
     // Long lists must scroll without pushing the menu actions out of view.
     #expect(host.fittingSize.height <= 640)
   }
-  @Test func inFlightProgressDoesNotResizeMenu() async throws {
+  @Test(arguments: [false, true])
+  func inFlightProgressDoesNotResizeMenu(switching: Bool) async throws {
     let gate = ExecutionGate()
-    let (model, _, _, _) = makeModel([
-      .init(command: .status, output: success(statusData())),
-      .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
-      .init(command: .status, output: success(statusData())),
-    ])
+    var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(statusData()))]
+    if switching {
+      steps += [
+        .init(command: .status, output: success(statusData())),
+        .init(command: .use("personal"), output: switchOutput, gate: gate),
+        .init(command: .status, output: success(statusData(active: "b"))),
+      ]
+    } else {
+      steps += [
+        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
+        .init(command: .status, output: success(statusData())),
+      ]
+    }
+    let (model, _, _, _) = makeModel(steps)
     await model.menuOpened()
     let host = NSHostingView(rootView: SwitchMenu(model: model))
     let height = host.fittingSize.height
-    let refreshing = Task { await model.refreshUsage() }
+    let operation = Task {
+      if switching {
+        await model.beginSwitch(accountID: "b")
+      } else {
+        await model.refreshUsage()
+      }
+    }
     await gate.waitForEntry()
     #expect(model.isBusy)
     #expect(abs(host.fittingSize.height - height) <= 1)
     await gate.resume()
-    await refreshing.value
+    await operation.value
+  }
+
+  @Test func manyProcessDetailsStayCollapsedAndDoNotGrowConfirmation() async {
+    let processes =
+      "["
+      + (4242..<4262).map { pid in
+        "{\"pid\":\(pid),\"command\":\"Codex\"}"
+      }.joined(separator: ",") + "]"
+    let (model, _, _, _) = makeModel([
+      .init(command: .status, output: success(statusData(processes: processes)))
+    ])
+    await model.beginSwitch(accountID: "b")
+    #expect(model.phase == .awaitingQuit)
+    let host = NSHostingView(rootView: SwitchMenu(model: model))
+    // Extra process count must not add an unbounded row for each PID.
+    #expect(host.fittingSize.height < 760)
   }
 
 }

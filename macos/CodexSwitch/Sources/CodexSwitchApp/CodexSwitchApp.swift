@@ -2,6 +2,10 @@ import AppKit
 import CodexSwitchCore
 import SwiftUI
 
+private enum MenuPalette {
+  static let accent = Color(.sRGB, red: 0.16, green: 0.42, blue: 0.84, opacity: 1)
+}
+
 @main
 struct CodexSwitchApp: App {
   @NSApplicationDelegateAdaptor(AgentDelegate.self) private var delegate
@@ -23,8 +27,10 @@ struct CodexSwitchApp: App {
   }
 
   var body: some Scene {
-    MenuBarExtra("Codex Switch", systemImage: "square.on.square") {
+    MenuBarExtra {
       SwitchMenu(model: model)
+    } label: {
+      Image(nsImage: MenuBarIcon.image).accessibilityLabel("Codex Switch")
     }
     .menuBarExtraStyle(.window)
   }
@@ -38,6 +44,7 @@ final class AgentDelegate: NSObject, NSApplicationDelegate {
 
 struct SwitchMenu: View {
   @ObservedObject var model: AppModel
+  @State private var showsProcessDetails = false
 
   private var activeAccount: Account? {
     guard let status = model.status else { return nil }
@@ -91,7 +98,10 @@ struct SwitchMenu: View {
       switchConfirmation
       Divider()
       VStack(spacing: 0) {
-        MenuAction("Refresh Usage", symbol: "arrow.clockwise") {
+        MenuAction(
+          "Refresh Usage", symbol: "arrow.clockwise",
+          progress: model.phase == .refreshing ? model.progressLabel : nil
+        ) {
           Task { await model.refreshUsage() }
         }
         if model.errorMessage != nil || model.status == nil {
@@ -109,17 +119,13 @@ struct SwitchMenu: View {
       Divider()
       footer
     }
-    .frame(width: 332)
+    .frame(width: 400)
     .disabled(model.progressLabel != nil)
-    .allowsHitTesting(model.progressLabel == nil)
-    .accessibilityHidden(model.progressLabel != nil)
-    .overlay {
-      if let progress = model.progressLabel {
-        OperationProgress(label: progress)
-      }
-    }
     .background(Color(nsColor: .windowBackgroundColor))
     .background(MenuOpenObserver { Task { await model.menuOpened() } })
+    .onChange(of: model.canCancel) { awaitingConfirmation in
+      if !awaitingConfirmation { showsProcessDetails = false }
+    }
   }
 
   private func currentAccount(_ account: Account) -> some View {
@@ -138,7 +144,7 @@ struct SwitchMenu: View {
         }
         Spacer(minLength: 0)
         Image(systemName: "checkmark.circle")
-          .font(.system(size: 15)).foregroundStyle(Color.accentColor)
+          .font(.system(size: 15)).foregroundStyle(MenuPalette.accent)
           .accessibilityLabel("Observed active account")
       }
       .padding(.top, 8)
@@ -147,6 +153,13 @@ struct SwitchMenu: View {
         QuotaMeter(quota: usage.secondary)
       }
       .padding(.top, 18)
+      HStack {
+        Text("Banked resets").foregroundStyle(.secondary)
+        Spacer()
+        Text(usage.bankedResetLabel).fontWeight(.medium).monospacedDigit()
+      }
+      .font(.system(size: 11)).padding(.top, 14)
+      .help("Cached earned manual rate-limit resets, separate from scheduled quota resets.")
     }
     .padding(.horizontal, 18).padding(.bottom, 20)
   }
@@ -162,7 +175,7 @@ struct SwitchMenu: View {
       VStack(alignment: .leading, spacing: 5) {
         sectionTitle(activeAccount == nil ? "SAVED ACCOUNTS" : "SWITCH ACCOUNT")
           .padding(.horizontal, 10)
-        if accounts.count > 3 {
+        if accounts.count > 1 {
           // Long lists need an explicit viewport so MenuBarExtra cannot
           // collapse the scroll area during intrinsic size measurement.
           ScrollView {
@@ -192,29 +205,38 @@ struct SwitchMenu: View {
     return Button {
       Task { await model.beginSwitch(accountID: account.id) }
     } label: {
-      HStack(spacing: 10) {
+      HStack(alignment: .top, spacing: 10) {
         Text(String(account.alias.prefix(1)).uppercased())
           .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
           .frame(width: 28, height: 28)
           .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
-        VStack(alignment: .leading, spacing: 3) {
-          Text(account.alias).font(.system(size: 13, weight: .medium)).lineLimit(1)
-          Text(usage.summary).font(.system(size: 11)).foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-          if account.usage != nil {
-            Text(usage.cacheLabel).font(.system(size: 10))
-              .foregroundStyle(
-                account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange
-              )
-              .lineLimit(2)
+        VStack(alignment: .leading, spacing: 5) {
+          HStack {
+            Text(account.alias).font(.system(size: 13, weight: .medium)).lineLimit(1)
+            Spacer(minLength: 4)
+            if let plan = usage.plan {
+              Text(plan).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
           }
+          SavedQuotaRow(quota: usage.primary)
+          SavedQuotaRow(quota: usage.secondary)
+          HStack {
+            Text("Banked resets")
+            Spacer(minLength: 4)
+            Text(usage.bankedResetLabel).monospacedDigit()
+          }
+          .font(.system(size: 10)).foregroundStyle(.secondary)
+          Text(usage.cacheLabel).font(.system(size: 10))
+            .foregroundStyle(
+              account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange
+            )
+            .lineLimit(1).help(usage.cacheLabel)
         }
-        Spacer(minLength: 0)
         Image(systemName: "chevron.right").font(.system(size: 11))
-          .foregroundStyle(.tertiary)
+          .foregroundStyle(.tertiary).padding(.top, 3)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.horizontal, 10).padding(.vertical, 8)
+      .padding(.horizontal, 10).padding(.vertical, 10)
       .contentShape(Rectangle())
     }
     .buttonStyle(MenuRowStyle())
@@ -223,9 +245,16 @@ struct SwitchMenu: View {
 
   private var footer: some View {
     HStack(spacing: 6) {
-      Circle().fill(processStatusColor).frame(width: 5, height: 5)
-        .accessibilityHidden(true)
-      Text(processStatusLabel).foregroundStyle(.secondary)
+      Group {
+        if footerProgress != nil {
+          ProgressView().controlSize(.mini)
+        } else {
+          Circle().fill(processStatusColor).frame(width: 5, height: 5)
+        }
+      }
+      .frame(width: 12, height: 14).accessibilityHidden(true)
+      Text(footerProgress ?? processStatusLabel)
+        .foregroundStyle(.secondary).lineLimit(1)
       Spacer()
       Button("Quit") { NSApplication.shared.terminate(nil) }
         .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -233,6 +262,10 @@ struct SwitchMenu: View {
         .accessibilityLabel("Quit Codex Switch")
     }
     .font(.system(size: 11)).padding(.horizontal, 18).padding(.vertical, 11)
+  }
+
+  private var footerProgress: String? {
+    model.phase == .refreshing ? nil : model.progressLabel
   }
 
   private var processStatusLabel: String {
@@ -262,11 +295,22 @@ struct SwitchMenu: View {
       VStack(alignment: .leading, spacing: 8) {
         Text("Switch to \(model.pendingAlias ?? "selected account")")
           .font(.system(size: 12, weight: .semibold))
-        if let processes = model.status?.codexProcesses {
-          ForEach(processes, id: \.self) { process in
-            Text("\(process.command) · PID \(process.pid)")
-              .font(.system(size: 10)).foregroundStyle(.secondary)
+        if let processes = model.status?.codexProcesses, !processes.isEmpty {
+          DisclosureGroup(
+            "\(processes.count) running processes", isExpanded: $showsProcessDetails
+          ) {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 3) {
+                ForEach(processes, id: \.self) { process in
+                  Text("\(process.command) · PID \(process.pid)")
+                    .font(.system(size: 10)).lineLimit(1)
+                }
+              }
+              .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: min(CGFloat(processes.count) * 16, 96))
           }
+          .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         switch model.phase {
         case .awaitingQuit:
@@ -312,36 +356,21 @@ struct SwitchMenu: View {
   }
 }
 
-private struct OperationProgress: View {
-  let label: String
-  @State private var showsProgress = false
+private struct SavedQuotaRow: View {
+  let quota: QuotaPresentation
 
   var body: some View {
-    ZStack {
-      Rectangle()
-        .fill(Color(nsColor: .windowBackgroundColor).opacity(showsProgress ? 0.9 : 0))
-      if showsProgress {
-        VStack(spacing: 10) {
-          ProgressView().controlSize(.small)
-          Text(label).font(.system(size: 12, weight: .medium))
-            .multilineTextAlignment(.center)
-        }
-        .padding(18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .padding(18)
-      }
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(quota.title).foregroundStyle(.secondary).frame(width: 42, alignment: .leading)
+      Text(quota.remaining.map { "\($0)% left" } ?? "Unavailable")
+        .monospacedDigit().frame(width: 62, alignment: .leading)
+      Spacer(minLength: 0)
+      Text(quota.resetLabel).foregroundStyle(.secondary).lineLimit(1)
+        .help(quota.resetLabel)
     }
-    .contentShape(Rectangle())
-    .onTapGesture {}  // Consume pointer input while the underlying menu is locked.
+    .font(.system(size: 10))
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(label)
-    .task {
-      // Fast cached reads should not flash a spinner or resize the popover.
-      do {
-        try await Task.sleep(for: .milliseconds(150))
-        showsProgress = true
-      } catch {}
-    }
+    .accessibilityLabel(quota.accessibilityLabel)
   }
 }
 
@@ -365,13 +394,17 @@ private struct QuotaMeter: View {
       GeometryReader { geometry in
         Capsule().fill(.quaternary)
           .overlay(alignment: .leading) {
-            Capsule().fill(Color.accentColor.opacity(0.75))
+            Capsule().fill(MenuPalette.accent)
               .frame(width: geometry.size.width * Double(quota.remaining ?? 0) / 100)
           }
       }
       .frame(height: 3)
-      Text(quota.remaining == nil ? "unavailable" : "remaining")
-        .font(.system(size: 11)).foregroundStyle(.secondary)
+      if quota.remaining == nil {
+        Text("unavailable").font(.system(size: 11)).foregroundStyle(.secondary)
+      }
+      Text(quota.resetLabel).font(.system(size: 10)).foregroundStyle(.secondary)
+        .lineLimit(2).frame(height: 26, alignment: .topLeading)
+        .help(quota.resetLabel)
     }
     .frame(maxWidth: .infinity)
     .accessibilityElement(children: .ignore)
@@ -383,23 +416,32 @@ private struct MenuAction: View {
   let title: String
   let symbol: String
   var opensApplication = false
+  let progress: String?
   let action: () -> Void
 
   init(
-    _ title: String, symbol: String, opensApplication: Bool = false, action: @escaping () -> Void
+    _ title: String, symbol: String, opensApplication: Bool = false,
+    progress: String? = nil, action: @escaping () -> Void
   ) {
     self.title = title
     self.symbol = symbol
     self.opensApplication = opensApplication
+    self.progress = progress
     self.action = action
   }
 
   var body: some View {
     Button(action: action) {
       HStack(spacing: 9) {
-        Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(.secondary)
-          .frame(width: 16)
-        Text(title).font(.system(size: 12))
+        Group {
+          if progress != nil {
+            ProgressView().controlSize(.mini)
+          } else {
+            Image(systemName: symbol).font(.system(size: 14)).foregroundStyle(.secondary)
+          }
+        }
+        .frame(width: 16, height: 16).accessibilityHidden(true)
+        Text(progress ?? title).font(.system(size: 12)).lineLimit(1)
         Spacer()
         if opensApplication {
           Image(systemName: "arrow.up.right").font(.system(size: 10)).foregroundStyle(.tertiary)
@@ -414,23 +456,23 @@ private struct MenuAction: View {
 private struct ConfirmationButtonStyle: ButtonStyle {
   var prominent = false
   var destructive = false
+  @Environment(\.isEnabled) private var isEnabled
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .font(.system(size: 11, weight: .medium))
-      .foregroundStyle(
-        prominent ? (destructive ? Color.white : Color(nsColor: .windowBackgroundColor)) : .primary
-      )
+      .font(.system(size: 11, weight: .semibold))
+      .foregroundStyle(prominent ? Color.white : .primary)
       .padding(.horizontal, 10).padding(.vertical, 7)
       .background(
         prominent
-          ? (destructive ? Color.red : Color.primary) : Color(nsColor: .controlBackgroundColor),
+          ? (destructive ? Color.red : MenuPalette.accent)
+          : Color(nsColor: .controlBackgroundColor),
         in: RoundedRectangle(cornerRadius: 6)
       )
       .overlay {
         RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
       }
-      .opacity(configuration.isPressed ? 0.75 : 1)
+      .opacity(isEnabled ? (configuration.isPressed ? 0.8 : 1) : 0.45)
   }
 }
 

@@ -14,7 +14,8 @@ struct UsagePresentationTests {
     #expect(usage.secondary.title == "Weekly")
     #expect(usage.secondary.remaining == 41)
     #expect(usage.cacheLabel.hasPrefix("Stale cache · "))
-    #expect(usage.primary.accessibilityLabel == "5-hour, 62% remaining, cached")
+    #expect(usage.primary.accessibilityLabel.hasPrefix("5-hour, 62% remaining, cached. Resets "))
+    #expect(usage.bankedResetCount == 2)
   }
 
   @Test func unavailableAndUnknownCacheStatesDoNotDisplayOldQuota() throws {
@@ -23,12 +24,14 @@ struct UsagePresentationTests {
         CachedUsage.self,
         from: Data(
           """
-          {"status":"\(state)","rateLimits":{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300}}}}
+          {"status":"\(state)","rateLimits":{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300,"resetsAt":1792483200}},"rateLimitResetCredits":{"availableCount":2}}}
           """.utf8))
       let presentation = UsagePresentation(usage)
       #expect(presentation.primary.remaining == nil)
       #expect(presentation.secondary.remaining == nil)
       #expect(presentation.summary == "Usage unavailable")
+      #expect(presentation.bankedResetCount == nil)
+      #expect(presentation.primary.resetAt == nil)
     }
     let missing = UsagePresentation(nil)
     #expect(missing.primary.title == "Primary")
@@ -59,4 +62,48 @@ struct UsagePresentationTests {
       QuotaWindow.self, from: Data(#"{"usedPercent":20}"#.utf8))
     #expect(QuotaPresentation(window: unknown, fallback: "Primary").title == "Primary")
   }
+  @Test func resetTimesUseCachedUnixTimestampsAndRejectInvalidValues() throws {
+    for seconds: Int64 in [0, -1, Int64.max] {
+      let window = try JSONDecoder().decode(
+        QuotaWindow.self,
+        from: Data("{\"usedPercent\":20,\"resetsAt\":\(seconds)}".utf8))
+      let quota = QuotaPresentation(window: window, fallback: "Primary")
+      #expect(quota.resetAt == nil)
+      #expect(quota.resetLabel == "Reset time unavailable")
+    }
+    let status = try UIStatus.decode(statusData())
+    let usage = UsagePresentation(status.accounts[0].usage)
+    #expect(usage.primary.resetAt?.timeIntervalSince1970 == 1_792_483_200)
+    #expect(usage.secondary.resetAt?.timeIntervalSince1970 == 1_792_742_400)
+    #expect(usage.primary.resetLabel.hasPrefix("Resets "))
+    #expect(usage.primary.resetLabel != usage.secondary.resetLabel)
+    #expect(UsagePresentation(nil).primary.resetLabel == "Reset time unavailable")
+  }
+
+  @Test func bankedResetCountIsAuthoritativeAndDistinctFromMissingData() throws {
+    for count: Int64 in [0, 5] {
+      let usage = try JSONDecoder().decode(
+        CachedUsage.self,
+        from: Data(
+          """
+          {"status":"stale","rateLimits":{"rateLimits":{},
+           "rateLimitResetCredits":{"availableCount":\(count),"credits":[{"status":"available"}]}}}
+          """.utf8))
+      let presentation = UsagePresentation(usage)
+      #expect(presentation.bankedResetCount == count)
+      #expect(presentation.bankedResetLabel == "\(count) available")
+    }
+    for credits in ["null", "{}", "{\"availableCount\":-1}"] {
+      let usage = try JSONDecoder().decode(
+        CachedUsage.self,
+        from: Data(
+          """
+          {"status":"fresh","rateLimits":{"rateLimits":{},"rateLimitResetCredits":\(credits)}}
+          """.utf8))
+      #expect(UsagePresentation(usage).bankedResetCount == nil)
+      #expect(UsagePresentation(usage).bankedResetLabel == "Unavailable")
+    }
+    #expect(UsagePresentation(nil).bankedResetLabel == "Unavailable")
+  }
+
 }

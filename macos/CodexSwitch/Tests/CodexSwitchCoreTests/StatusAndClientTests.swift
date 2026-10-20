@@ -1,0 +1,114 @@
+import Foundation
+import Testing
+
+@testable import CodexSwitchCore
+
+struct StatusTests {
+  @Test func decodesBridgeAndIgnoresFutureFields() throws {
+    let status = try UIStatus.decode(statusData(processes: guiProcesses))
+    #expect(status.schemaVersion == 1)
+    #expect(status.accounts.count == 2)
+    #expect(status.activeAccountID == "a")
+    #expect(status.accounts[0].active)
+    #expect(status.observation.workspaceId == nil)
+    #expect(status.accounts[0].workspaceId == "workspace-a")
+    #expect(status.codexProcesses == [CodexProcess(pid: 4242, command: "Codex")])
+    let usage = try #require(status.accounts[0].usage)
+    #expect(usage.summary == "Pro · 5h 62% left · Week 41% left · Stale cache")
+    #expect(usage.isStaleOrUnavailable)
+    #expect(usage.updatedLabel.hasPrefix("Cached "))
+  }
+
+  @Test func unsupportedVersionIsRejectedBeforeItsPayload() {
+    #expect(throws: UIError.unsupportedSchema) {
+      try UIStatus.decode(Data(#"{"schemaVersion":2,"differentPayload":true}"#.utf8))
+    }
+  }
+
+  @Test(arguments: ["unmanaged", "ambiguous", "credential_conflict", "future_state"])
+  func uncertainObservationIsNotSafe(state: String) throws {
+    let status = try UIStatus.decode(statusData(state: state))
+    #expect(!status.canSwitch)
+    #expect(status.activeAccountID == nil)
+    #expect(status.observationNotice != nil)
+  }
+
+  @Test func malformedResponseHasSafeError() {
+    #expect(throws: UIError.invalidResponse) { try UIStatus.decode(Data(syntheticCanary.utf8)) }
+    #expect(!UIError.invalidResponse.localizedDescription.contains(syntheticCanary))
+  }
+}
+
+@Suite @MainActor
+struct ClientTests {
+  @Test func exactCommandsAndNoProcessBypass() async throws {
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(statusData())),
+      .init(command: .use("personal"), output: switchOutput),
+      .init(command: .status, output: success(statusData(active: "b"))),
+    ])
+    await model.beginSwitch(accountID: "b")
+    let commands = await executor.commands
+    #expect(
+      commands.map(\.arguments) == [
+        ["ui", "status", "--json"], ["use", "personal", "--json"], ["ui", "status", "--json"],
+      ])
+    #expect(commands.allSatisfy { !$0.arguments.contains("--allow-running") })
+    #expect(model.status?.activeAccountID == "b")
+  }
+
+  @Test(arguments: ["--allow-running", "--help", "-a", "", " invalid", "line\nbreak"])
+  func aliasesCannotBecomeFlags(alias: String) async throws {
+    let trace = ActionTrace()
+    let executor = ScriptedExecutor([], trace: trace)
+    let client = CLIClient(executor: executor)
+    await #expect(throws: UIError.unsupportedAlias) { try await client.use(alias: alias) }
+    #expect(await executor.commands.isEmpty)
+  }
+
+  @Test func nonzeroExitDoesNotDecodeOrDisplayOutput() async {
+    let trace = ActionTrace()
+    let executor = ScriptedExecutor([.init(command: .status, output: failedOutput())], trace: trace)
+    let client = CLIClient(executor: executor)
+    await #expect(throws: UIError.commandFailed) { try await client.status() }
+    #expect(!UIError.commandFailed.localizedDescription.contains(syntheticCanary))
+  }
+
+  @Test func perAccountRefreshFailureIsNotSuccess() async throws {
+    let accounts = Data(
+      #"[{"id":"a","alias":"work","accountId":"a","active":true,"source":"synthetic","usage":{"status":"stale","error":"SYNTHETIC_RAW_DIAGNOSTIC_CANARY"}}]"#
+        .utf8)
+    let trace = ActionTrace()
+    let executor = ScriptedExecutor(
+      [.init(command: .refreshUsage, output: success(accounts))], trace: trace)
+    await #expect(throws: UIError.refreshFailed) {
+      try await CLIClient(executor: executor).refreshUsage()
+    }
+    #expect(!UIError.refreshFailed.localizedDescription.contains(syntheticCanary))
+  }
+
+  @Test func explicitResolverNeverFallsBackToPath() throws {
+    let bundle = URL(fileURLWithPath: "/nonexistent/Codex Switch.app")
+    let explicit = CLIResolver(configuredPath: "/usr/bin/true", bundleURL: bundle)
+    #expect(try explicit.resolve().path == "/usr/bin/true")
+    #expect(throws: UIError.cliUnavailable) {
+      try CLIResolver(configuredPath: "codex-switch", bundleURL: bundle).resolve()
+    }
+    #expect(throws: UIError.cliUnavailable) {
+      try CLIResolver(configuredPath: nil, bundleURL: bundle).resolve()
+    }
+  }
+
+  @Test func resolverRejectsSharedWritableDirectory() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let binary = root.appendingPathComponent("synthetic-cli")
+    try Data("synthetic; never executed".utf8).write(to: binary)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: root.path)
+    #expect(throws: UIError.unsafeExecutable) {
+      try CLIResolver(configuredPath: binary.path, bundleURL: root).resolve()
+    }
+  }
+}

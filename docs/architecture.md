@@ -55,6 +55,20 @@ Switching requires explicit user action through the normal guarded
 `codex-switch use <alias> --json` command, without `--allow-running`. That command
 rechecks safety and remains the final mutation authority.
 
+`macos/CodexSwitch` contains Codex Switch, a SwiftUI `MenuBarExtra` agent app.
+Opening its menu reads cached status only. Explicit Refresh Usage calls
+`codex-switch account list --refresh --json` and reloads status; failed reads or
+refreshes retain the last successful view. No background polling is performed.
+
+For supported GUI apps, switching follows explicit Quit confirmation, native
+graceful termination, and bounded CLI status verification. If Codex remains,
+Force Quit requires a second confirmation and fresh CLI/native app identity
+checks before each target is terminated. Terminal or unverifiable processes
+require manual closure and Retry. A reused PID never transfers consent. Every
+final switch uses the normal CLI process guard, including races after the
+informational status read. See `../macos/CodexSwitch/README.md` for building and
+the native UI boundary details.
+
 ## Locking and mutation model
 
 All vault writers acquire `<vault path>.lock`. Operations using live

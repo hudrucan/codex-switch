@@ -26,11 +26,8 @@ By default the app uses exactly `Contents/Helpers/codex-switch` inside its own
 bundle. Development can explicitly override this with the absolute environment
 variable `CODEX_SWITCH_CLI_PATH`. There is no PATH search or shell invocation.
 The resolved executable and its parent directories must be owned by the current
-user or root and must not be group/other writable. Setuid/setgid executables,
-non-executables, and shared writable directories such as `/tmp` are rejected.
-An invalid explicit override fails instead of falling back to another binary.
-These checks assume the current OS user is trusted; they are not code-signature
-verification or a defense against that user replacing their own files.
+user or root and must not be group/other writable. Invalid overrides fail
+without fallback. See the [executable selection policy](../../docs/architecture.md#native-ui-boundary).
 
 To create a local bundle from a separately built, reviewed CLI, run from the
 repository root (the output directory must be new and its parent must exist):
@@ -50,17 +47,12 @@ test doubles instead.
 
 ## Menu and switching behavior
 
-The monochrome menu-bar icon shows a person with two switching arrows. The menu
-highlights the observed
-current account with a centered plan badge and two compact quota meters; saved
-accounts appear below with their own quota percentages, reset times, banked
-counts and cache labels. The 400-point menu keeps process details collapsed by
-default in a bounded scroll area. It follows the system light
-or dark appearance. Each quota meter shows its cached reset date and local time.
-Banked resets use `rateLimitResetCredits.availableCount`, independently of how
-many grant detail rows the service returns. Missing reset times/counts are
-unavailable, not estimated or treated as zero. These values share the displayed
-cache freshness and never trigger a query by themselves.
+The menu shows the current account and saved accounts with quota percentages,
+local reset times, banked reset counts and cache labels. Missing reset times or
+counts show as unavailable rather than zero. Banked resets use the reported
+available count, independently of how many detail rows the service returns.
+The menu follows the system appearance and keeps process details collapsed by
+default. Its monochrome icon shows a person with two switching arrows.
 
 Opening the menu while idle reads only `codex-switch ui status --json`. The
 menu labels usage as cached, shows its last fetch time, and distinguishes stale,
@@ -86,27 +78,14 @@ with `-` or colliding with another profile ID require renaming through the CLI.
 If the guarded command fails, status is re-read; a running-Codex race returns to
 the quit flow without a bypass or automatic retry.
 
-For CLI-reported `Codex`/`ChatGPT` GUI applications with a supported native bundle
-identity and launch date, the app asks for **Quit Codex & Switch** confirmation.
-It re-reads process status before each native termination request, checks app
-instance identity, and requests graceful termination with `NSRunningApplication`.
-It groups verified helpers and bundled `codex` workers by GUI owner, checking
-stable native ancestry, executable paths inside the app bundle, start times
-and absence of a controlling terminal. It sends a request only once per GUI,
-never to a worker PID. Children that briefly outlive the GUI are only waited on.
-It then checks status at most 12 times with a 500 ms wait between checks. Cached
-status child processes receive a termination request after 5 seconds; mutating
-CLI commands are allowed to finish under their own lifecycle controls.
-
-If Codex remains, **Force Quit Codex** requires a separate explicit confirmation
-and warns about unsaved work. Each target must still appear in freshly read CLI
-status and have the same native app instance, bundle identifier, and launch
-date. A new GUI instance or reused GUI PID requires fresh consent. Independent
-terminal processes still require manual closure. Only after the CLI
-reports no Codex processes does the normal guarded switch run. Terminal `codex`
-processes or unverifiable applications are never signaled: the user closes them
-and chooses **Retry Switch**. Cancel is available while awaiting confirmation;
-quit/open/refresh/switch controls are disabled during in-flight operations.
+When a supported GUI is running, **Quit Codex & Switch** asks for confirmation
+and waits for Codex and its workers to exit. **Force Quit Codex** requires a
+separate confirmation and warns about unsaved work. A new GUI instance requires
+fresh consent. Terminal `codex` processes or unverifiable applications require
+manual closure followed by **Retry Switch**. Switching remains guarded until
+the CLI reports no Codex processes. Cancel is available while awaiting
+confirmation; controls are disabled during in-flight operations. See the
+[process verification rules](../../docs/architecture.md#native-ui-boundary).
 
 **Open Codex** independently uses `NSWorkspace`, preferring the configured Codex
 bundle identifier and then ChatGPT, then reads cached status once to update the
@@ -114,8 +93,6 @@ process indicator. It never switches accounts or automatically reopens Codex
 after Quit & Switch. No AppleScript, Automation entitlement, shell, or arbitrary
 PID kill is used for application termination.
 
-Custom app artwork, distribution signing/notarization, release/installation
-automation, login items, automatic refresh, and automated account rotation are
-outside this implementation. Real GUI launch, menu lifecycle, and native
-quit/force-quit behavior still require an explicit manual acceptance run with a
-reviewed bundle; unit tests verify the state machine through doubles.
+Real GUI launch, menu lifecycle, and native quit/force-quit behavior require
+manual acceptance with a reviewed bundle; unit tests verify the state machine
+through doubles.

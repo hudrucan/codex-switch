@@ -10,13 +10,6 @@ UI state stay in place.
 > credential is projected to the officially supported file store at
 > `$CODEX_HOME/auth.json`. Treat that file like a password.
 
-## Why
-
-Codex supports cached ChatGPT login credentials, but exposes one active login at
-a time. Logging out and completing the browser flow for every account switch is
-slow. `codex-switch` stores multiple profiles in an encrypted local vault and
-atomically projects the selected profile into the existing Codex home.
-
 ## Security model
 
 - A random 256-bit vault key is stored in macOS Keychain, Windows Credential
@@ -41,31 +34,21 @@ cd codex-switch
 go build -trimpath ./cmd/codex-switch
 ```
 
-This fork's binary release identity is `hudrucan/codex-switch`; the Go module
-path remains `github.com/SilkageNet/codex-switch`. Source/development builds
-refuse mutating self-update. `update --check` checks only the fork and does not
-prove that the current build is eligible for self-update.
+This fork distributes as `hudrucan/codex-switch`; the Go module path remains
+`github.com/SilkageNet/codex-switch`. Source/development builds require manual
+updates. `update --check` checks the fork without proving self-update eligibility.
 
 When a reviewed fork release is available, run `sh scripts/install.sh` or
 `./scripts/install.ps1` from that reviewed checkout. Both installers require
-Python 3.9+ and verify the same origin, asset, checksum, and archive policy.
+Python 3.9+ and verify artifacts before installation.
 `CODEX_SWITCH_VERSION` selects a stable version (default: latest), and
 `CODEX_SWITCH_INSTALL_DIR` selects the destination. Missing fork releases fail
 closed; installers never fall back to upstream. See [distribution security](docs/security.md#binary-distribution-and-update-trust).
 
-Adding accounts and querying live usage require an official Codex CLI that this
-process can launch. On macOS, `codex-switch` checks `PATH` first and then the
-official Codex and ChatGPT application bundles in `/Applications` and
-`~/Applications`, including the nested CLI layout used by current ChatGPT.app
-releases. On Windows, install the
-[standalone Codex CLI](https://learn.chatgpt.com/docs/codex/cli); the executable
-bundled inside the Codex desktop app's WindowsApps package cannot be launched by
-external processes. Verify the installation with `codex --version` before using
-those commands. `CODEX_BINARY` and `--codex-binary` remain explicit overrides.
-
-WSL2 is supported by the Linux archive. It uses the Windows user's DPAPI
-protection through the built-in `powershell.exe`; a Linux desktop Secret Service
-session is not required.
+Adding accounts and querying live usage require a launchable official Codex CLI.
+macOS can use the CLI bundled with Codex/ChatGPT; Windows requires the standalone
+CLI. `CODEX_BINARY` and `--codex-binary` select an explicit executable. The Linux
+archive also supports WSL2. See [platform requirements](docs/compatibility.md).
 
 ## Quick start
 
@@ -115,17 +98,9 @@ codex-switch account usage work --cached
 ```
 
 Normal `account list` calls refresh only missing snapshots or snapshots older
-than five minutes. Explicit `--refresh` queries every account. Failed queries
-are retried up to three times with backoff, and multi-account refreshes run in a
-reliable sequence instead of starting several Codex App Servers at once. Each
-query runs in an isolated temporary `CODEX_HOME`; it does
-not switch `$CODEX_HOME/auth.json`, sessions, plugins, or UI state. The cache
-contains usage numbers and public account metadata only, never tokens.
-
-The compact list preserves the last successful values when a refresh fails,
-shows an error summary in the `ERROR` column, and prints the complete redacted
-error below the table. The last failure is retained in the local usage cache so
-`--cached` remains diagnostic after the failing process exits.
+than five minutes. Explicit `--refresh` queries every account; `--cached` stays
+offline. Failed refreshes preserve the last successful values and show a
+redacted error. See [usage recovery and diagnostics](docs/troubleshooting.md#account-usage-is-unavailable).
 
 The compact list shows the next automatic reset for each quota window. Its
 `RESETS` column is separate: it reports earned manual rate-limit resets and the
@@ -168,18 +143,11 @@ The live `$CODEX_HOME/auth.json` is the source of truth for the active account.
 `account usage` selection inspect that live identity instead of trusting the
 last account recorded by `codex-switch`.
 
-If you log in directly through Codex, inspect and safely adopt the change with:
-
-```bash
-codex-switch sync --check
-codex-switch sync
-```
-
-When the live login belongs to another saved profile, `sync` repairs the active
-pointer and adopts only a provably newer credential generation. An unmanaged
-login can be preserved with `codex-switch sync --as <alias>`. If generations
-cannot be ordered, the tool leaves both sides unchanged until you explicitly
-run `codex-switch sync --prefer-live`.
+After a login directly in Codex, use `sync --check` to inspect and `sync` to
+adopt a provably newer credential generation and repair the active pointer.
+Preserve an unmanaged login with `sync --as <alias>`. Ambiguous generations
+remain unchanged unless you explicitly choose `sync --prefer-live`; see
+[token generation conflicts](docs/troubleshooting.md#token-generations-are-ambiguous).
 
 Running `codex-switch use <alias>` when that alias is already live performs the
 same safe reconciliation without rewriting `auth.json`, closing Codex, or
@@ -209,6 +177,7 @@ switch.
 - [Security](docs/security.md)
 - [Compatibility](docs/compatibility.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [macOS menu-bar app](macos/CodexSwitch/README.md)
 
 The design was informed by the MIT-licensed
 [CC Switch](https://github.com/farion1231/cc-switch), especially its handling of

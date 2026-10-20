@@ -55,6 +55,14 @@ Switching requires explicit user action through the normal guarded
 `codex-switch use <alias> --json` command, without `--allow-running`. That command
 rechecks safety and remains the final mutation authority.
 
+The app uses its bundled `Contents/Helpers/codex-switch`, or an absolute
+`CODEX_SWITCH_CLI_PATH` override. There is no PATH search or shell. After symlink
+resolution, the executable and its parent directories must belong to the current
+user or root and must not be group/other writable. Non-executable files,
+setuid/setgid executables, and non-regular files are rejected. Invalid overrides
+fail without fallback. These checks trust the current user; they do not verify
+a code signature.
+
 `macos/CodexSwitch` contains Codex Switch, a SwiftUI `MenuBarExtra` agent app.
 Opening its menu reads cached status only. Explicit Refresh Usage calls
 `codex-switch account list --refresh --json` and reloads status; failed reads or
@@ -80,8 +88,11 @@ Force Quit requires a second confirmation and fresh CLI/native app identity
 checks before each target is terminated. Terminal or unverifiable processes
 require manual closure and Retry. A reused PID never transfers consent. Every
 final switch uses the normal CLI process guard, including races after the
-informational status read. See `../macos/CodexSwitch/README.md` for building and
-the native UI boundary details.
+informational status read. After termination requests, cached status is checked
+at most 12 times, waiting 500 ms between checks. A still-running status subprocess
+receives a termination request after 5 seconds; mutating CLI commands finish
+under their own lifecycle controls. See the [native app guide](../macos/CodexSwitch/README.md)
+for building and menu behavior.
 
 ## Locking and mutation model
 
@@ -297,15 +308,12 @@ without rewriting the cache. See `security.md` for the diagnostic contract.
 ## Release/update/install flow
 
 `main` passes version plus repository/channel linker stamps into the updater.
-The Go source defaults to development. GoReleaser OSS reads
-`CODEX_SWITCH_BUILD_CHANNEL` with `envOrDefault`, defaulting to development when
-absent. Only the trusted release workflow supplies `release` to its GoReleaser
-step; ordinary source builds, GoReleaser invocations, and snapshots without that
-marker remain development builds. These linker stamps are policy markers, not
-signatures. Version output and the update result's `installed`, `latest`,
+Source builds default to development; the trusted release workflow supplies
+the release channel. Version output and the update result's `installed`, `latest`,
 `current`, and `updated` keys retain their public schemas. The trusted release
 repository is an explicit constant, never derived from the Go module path or
-from release metadata.
+from release metadata. See [distribution policy and trust limits](security.md#binary-distribution-and-update-trust)
+for provenance, artifact validation, redirect rules, and publication controls.
 
 ```text
 validate installed provenance (mutating update only)
@@ -321,16 +329,14 @@ validate installed provenance (mutating update only)
 Before GoReleaser runs, `scripts/verify-release-source.sh` validates the stable
 tag, tag/HEAD agreement, and clean worktree, then explicitly fetches origin main
 and checks tag ancestry against the refreshed `refs/remotes/origin/main`. Any
-fetch or ancestry failure aborts publication. Checkout is bound to the fork by
-the workflow repository condition. The source check depends on repository/workflow
-control and required release-tag restrictions; it cannot independently prove
-review or authenticate a publisher.
+fetch or ancestry failure aborts publication. This establishes source reachability,
+not human review or publisher authentication.
 
 Shell and PowerShell install scripts delegate to a verifier in the same reviewed
 checkout, using Python 3.9+ and its standard library. The installer independently
 validates release origin, assets, checksums, and archives before staging and
 atomically replacing a target. It never executes archive contents or falls back
-to upstream releases. See `security.md` for authenticity and platform limits.
+to upstream releases.
 
 ## Data locations
 

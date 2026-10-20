@@ -266,41 +266,32 @@ func sendRequest(encoder *json.Encoder, id int, method string, params any) error
 }
 
 func readResponse(scanner *bufio.Scanner, expected int) (rpcResponse, error) {
-	responses, err := readResponses(scanner, expected)
-	return responses[expected], err
-}
-
-func readResponses(scanner *bufio.Scanner, expected ...int) (map[int]rpcResponse, error) {
-	wanted := make(map[int]bool, len(expected))
-	for _, id := range expected {
-		wanted[id] = true
-	}
-	responses := make(map[int]rpcResponse, len(expected))
-	for len(responses) < len(wanted) && scanner.Scan() {
+	for scanner.Scan() {
 		line := bytes.TrimSpace(scanner.Bytes())
 		if len(line) == 0 {
 			continue
 		}
 		var response rpcResponse
 		if err := json.Unmarshal(line, &response); err != nil {
-			return nil, failure("account usage query", "invalid response", err)
+			return rpcResponse{}, failure("account usage query", "invalid response", err)
 		}
 		if len(response.ID) == 0 || bytes.Equal(response.ID, []byte("null")) {
 			continue
 		}
 		id, err := strconv.Atoi(strings.Trim(string(response.ID), `"`))
-		if err != nil || !wanted[id] {
+		if err != nil || id != expected {
 			continue
 		}
-		responses[id] = response
+		// A final JSON token can arrive together with a non-EOF read failure.
+		if err := scanner.Err(); err != nil {
+			return rpcResponse{}, err
+		}
+		return response, nil
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return rpcResponse{}, err
 	}
-	if len(responses) != len(wanted) {
-		return nil, io.ErrUnexpectedEOF
-	}
-	return responses, nil
+	return rpcResponse{}, io.ErrUnexpectedEOF
 }
 
 func responseError(method string, rpcErr *rpcError) error {

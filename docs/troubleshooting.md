@@ -21,10 +21,11 @@ A timestamped `config.toml.codex-switch.bak.*` file is created first.
 
 ## WSL reports that secret-tool is unavailable
 
-Update to a WSL-capable release and rerun initialization:
+Use a WSL-capable build and rerun initialization. Source/development builds
+follow the [manual installation instructions](../README.md#install-from-source);
+trusted release builds can use `codex-switch update`.
 
 ```bash
-codex-switch update
 codex-switch init --enable-file-store
 ```
 
@@ -64,7 +65,7 @@ codex-switch sync --as current
 
 ## Account list disagrees with a login performed in Codex
 
-Recent releases derive the active marker from Codex's live `auth.json`. Check
+The active marker is derived from Codex's live `auth.json`. Check
 the detected drift and reconcile the encrypted profile and local pointer:
 
 ```bash
@@ -101,10 +102,9 @@ codex-switch account usage <alias>
 
 On macOS, a standalone `codex` command is optional when the official Codex or
 ChatGPT desktop app is installed in `/Applications` or `~/Applications`.
-`codex-switch` automatically discovers both the retained Codex.app compatibility
-path and the current nested ChatGPT.app CLI. Run `codex-switch doctor` to see the
-exact executable path selected. Nonstandard application locations still require
-`--codex-binary <path>` or `CODEX_BINARY`.
+Run `codex-switch doctor` to see the selected executable. Nonstandard locations
+require `--codex-binary <path>` or `CODEX_BINARY`; see
+[supported discovery paths](compatibility.md#codex-releases).
 
 On Windows, a path under
 `C:\Program Files\WindowsApps\OpenAI.Codex_*\app\resources\codex.exe` belongs to

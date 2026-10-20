@@ -2,7 +2,7 @@
 
 ## Supported authentication
 
-The initial compatibility adapter accepts ChatGPT login documents with:
+The authentication adapter accepts ChatGPT login documents with:
 
 - `auth_mode = "chatgpt"`
 - `tokens.account_id`
@@ -12,7 +12,7 @@ The initial compatibility adapter accepts ChatGPT login documents with:
 - optional RFC3339 `last_refresh`
 
 Unknown fields are retained because the complete raw document is encrypted and
-projected. API-key profiles are intentionally outside the first release.
+projected. API-key profiles are unsupported.
 
 ## Credential store
 
@@ -46,10 +46,10 @@ rotated.
 
 ## Codex releases
 
-Development began against Codex CLI `0.148.0-alpha.15`; isolated account-usage
-queries were validated with `0.148.0-alpha.21`. The project does not use private
-OAuth or usage endpoints. Login is delegated to the installed official CLI, and
-usage is read through the documented stable Codex App Server protocol.
+Isolated account-usage queries were validated with Codex CLI
+`0.148.0-alpha.21`. Login is delegated to the installed official CLI, and usage
+uses the documented stable App Server protocol without private OAuth or usage
+endpoints.
 
 On Windows, these operations require the standalone Codex CLI. The executable
 inside the Microsoft Store/MSIX desktop package is private to that package and

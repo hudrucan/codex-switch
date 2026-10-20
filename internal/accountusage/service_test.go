@@ -1,6 +1,7 @@
 package accountusage
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -73,6 +74,72 @@ func TestRefreshCachesUsageAndAdoptsRotatedCredentials(t *testing.T) {
 	cache, err := service.Cached()
 	if err != nil || cache.Profiles[profile.ID].PlanType != "pro" {
 		t.Fatalf("usage was not cached: %#v, %v", cache, err)
+	}
+}
+
+func TestRefreshCollectsAllQueriesBeforePersistingMixedResults(t *testing.T) {
+	service, manager, first := testService(t, false)
+	data, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := vault.NewProfile("b", "test", authBytes("account-b", "refresh-old", "2026-08-20T00:00:00Z"), "account-b", "", "", time.Time{})
+	second.ID = "synthetic-second-profile"
+	if err := data.Add(second, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Save(data); err != nil {
+		t.Fatal(err)
+	}
+	var queried []string
+	service.queryAttempts = 1
+	service.Runner = queryFunc(func(_ context.Context, raw json.RawMessage) (codexusage.Snapshot, json.RawMessage, error) {
+		loaded, err := manager.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, original := range []vault.Profile{first, second} {
+			saved, err := loaded.FindByID(original.ID)
+			if err != nil || !bytes.Equal(saved.Auth, original.Auth) {
+				t.Fatal("credentials were persisted before all queries completed")
+			}
+		}
+		document, err := authschema.Parse(raw)
+		if err != nil {
+			t.Fatal("query received invalid synthetic credentials")
+		}
+		account := document.Tokens.AccountID
+		queried = append(queried, account)
+		candidate := authBytes(account, "refresh-new", "2026-08-20T01:00:00Z")
+		if account == second.AccountID {
+			return codexusage.Snapshot{}, candidate, errors.New("temporary connection failure")
+		}
+		return codexusage.Snapshot{FetchedAt: time.Now().UTC(), PlanType: "pro"}, candidate, nil
+	})
+	results, err := service.Refresh(context.Background(), []string{first.ID, second.ID, first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(queried, ",") != "account-a,account-b" || len(results) != 2 || results[first.ID].Error != "" || results[second.ID].Error == "" {
+		t.Fatal("query selection or mixed result attribution changed")
+	}
+	loaded, err := manager.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, original := range []vault.Profile{first, second} {
+		saved, err := loaded.FindByID(original.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err := authschema.Parse(saved.Auth)
+		if err != nil || document.Tokens.AccountID != original.AccountID || document.Tokens.RefreshToken != "refresh-new" {
+			t.Fatal("a query result lost or misattributed its refreshed credentials")
+		}
+	}
+	cache, err := service.Cached()
+	if err != nil || len(cache.Profiles) != 1 || cache.Profiles[first.ID].PlanType != "pro" || cache.Failures[second.ID].Message != results[second.ID].Error {
+		t.Fatal("mixed success and failure cache state changed")
 	}
 }
 

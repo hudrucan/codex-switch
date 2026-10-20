@@ -14,9 +14,11 @@ struct StatusTests {
     #expect(status.accounts[0].workspaceId == "workspace-a")
     #expect(status.codexProcesses == [CodexProcess(pid: 4242, command: "Codex")])
     let usage = try #require(status.accounts[0].usage)
-    #expect(usage.summary == "Pro · 5h 62% left · Week 41% left · Stale cache")
+    #expect(usage.planType == "pro")
+    #expect(usage.rateLimits?.main.primary?.usedPercent == 38)
+    #expect(usage.rateLimits?.main.secondary?.usedPercent == 59)
     #expect(usage.isStaleOrUnavailable)
-    #expect(usage.updatedLabel.hasPrefix("Cached "))
+    #expect(usage.fetchedAt == "2026-10-20T01:02:03.123456789Z")
   }
 
   @Test func unsupportedVersionIsRejectedBeforeItsPayload() {

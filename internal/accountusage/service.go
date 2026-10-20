@@ -48,14 +48,6 @@ type Result struct {
 	Attempts  int                 `json:"attempts,omitempty"`
 }
 
-type queryResult struct {
-	profileID string
-	snapshot  codexusage.Snapshot
-	auth      json.RawMessage
-	err       error
-	attempts  int
-}
-
 func (service Service) Cached() (usagecache.Cache, error) {
 	return usagecache.Load(service.Paths.UsageCache)
 }
@@ -88,26 +80,21 @@ func (service Service) Refresh(ctx context.Context, profileIDs []string) (output
 		}
 	}
 
-	queried := make([]queryResult, 0, len(selected))
-	for _, profile := range selected {
-		snapshot, updatedAuth, attempts, queryErr := service.queryWithRetry(ctx, profile.Auth)
-		queried = append(queried, queryResult{profileID: profile.ID, snapshot: snapshot, auth: updatedAuth, err: queryErr, attempts: attempts})
-	}
-
 	results := make(map[string]Result, len(selected))
 	candidates := make(map[string]json.RawMessage, len(selected))
 	successful := make(map[string]codexusage.Snapshot)
-	for _, result := range queried {
-		entry := Result{ProfileID: result.profileID, Attempts: result.attempts}
-		if result.err != nil {
-			entry.Error = codexusage.ErrorMessage(result.err)
+	for _, profile := range selected {
+		snapshot, updatedAuth, attempts, queryErr := service.queryWithRetry(ctx, profile.Auth)
+		entry := Result{ProfileID: profile.ID, Attempts: attempts}
+		if queryErr != nil {
+			entry.Error = codexusage.ErrorMessage(queryErr)
 		} else {
-			entry.Snapshot = result.snapshot
+			entry.Snapshot = snapshot
 		}
-		if len(result.auth) > 0 {
-			candidates[result.profileID] = result.auth
+		if len(updatedAuth) > 0 {
+			candidates[profile.ID] = updatedAuth
 		}
-		results[result.profileID] = entry
+		results[profile.ID] = entry
 	}
 
 	data, err = service.Vault.Load()

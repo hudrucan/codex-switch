@@ -29,7 +29,7 @@ struct UsagePresentationTests {
       let presentation = UsagePresentation(usage)
       #expect(presentation.primary.remaining == nil)
       #expect(presentation.secondary.remaining == nil)
-      #expect(presentation.summary == "Usage unavailable")
+      #expect(presentation.cacheLabel.hasPrefix("Usage unavailable"))
       #expect(presentation.bankedResetCount == nil)
       #expect(presentation.primary.resetAt == nil)
     }
@@ -47,7 +47,38 @@ struct UsagePresentationTests {
         #"{"status":"fresh","partial":["secondary"],"error":"synthetic error"}"#.utf8))
     let presentation = UsagePresentation(usage)
     #expect(presentation.cacheLabel == "Cached · No cached update time · Partial · Refresh failed")
-    #expect(presentation.summary == "Usage unavailable")
+    #expect(presentation.primary.remaining == nil)
+    #expect(presentation.secondary.remaining == nil)
+  }
+
+  @Test(arguments: ["2026-10-20T01:02:03Z", "2026-10-20T01:02:03.123456789Z"])
+  func cachedUpdateTimesKeepLocalFormatting(timestamp: String) throws {
+    let updated = Date(timeIntervalSince1970: 1_792_458_123)
+      .formatted(date: .abbreviated, time: .shortened)
+    for (state, label) in [
+      ("fresh", "Cached"), ("stale", "Stale cache"),
+      ("unavailable", "Usage unavailable"), ("future_state", "Usage unavailable"),
+    ] {
+      let usage = try JSONDecoder().decode(
+        CachedUsage.self,
+        from: JSONSerialization.data(withJSONObject: ["status": state, "fetchedAt": timestamp]))
+      #expect(UsagePresentation(usage).cacheLabel == "\(label) · \(updated)")
+    }
+  }
+
+  @Test(arguments: [nil, "invalid", "1970-01-01T00:00:00Z", "1969-12-31T23:59:59Z"] as [String?])
+  func missingOrInvalidCacheTimesKeepTheirWarnings(timestamp: String?) throws {
+    for (state, label) in [
+      ("fresh", "Cached · No cached update time"),
+      ("stale", "Stale cache · No cached update time"),
+      ("unavailable", "Usage unavailable"), ("future_state", "Usage unavailable"),
+    ] {
+      var payload = ["status": state]
+      payload["fetchedAt"] = timestamp
+      let usage = try JSONDecoder().decode(
+        CachedUsage.self, from: JSONSerialization.data(withJSONObject: payload))
+      #expect(UsagePresentation(usage).cacheLabel == label)
+    }
   }
 
   @Test func quotaClampsExtremeValuesAndDoesNotInventWindowDuration() throws {

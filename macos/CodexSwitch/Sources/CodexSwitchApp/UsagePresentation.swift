@@ -6,7 +6,6 @@ struct UsagePresentation {
   let plan: String?
   let primary: QuotaPresentation
   let secondary: QuotaPresentation
-  let summary: String
   let cacheLabel: String
   let bankedResetCount: Int64?
 
@@ -21,28 +20,31 @@ struct UsagePresentation {
       window: available ? usage?.rateLimits?.main.primary : nil, fallback: "Primary")
     secondary = QuotaPresentation(
       window: available ? usage?.rateLimits?.main.secondary : nil, fallback: "Secondary")
-    let quotas = [primary, secondary].compactMap { quota -> String? in
-      guard let remaining = quota.remaining else { return nil }
-      return "\(quota.title) \(remaining)% left"
-    }
     let reportedCount = available ? usage?.rateLimits?.rateLimitResetCredits?.availableCount : nil
     bankedResetCount = reportedCount.flatMap { $0 >= 0 ? $0 : nil }
-    let banked = bankedResetCount.map { "\($0) banked resets" }
-    summary =
-      ([plan].compactMap { $0 } + (quotas.isEmpty ? ["Usage unavailable"] : quotas)
-      + [banked].compactMap { $0 }).joined(separator: " · ")
 
     var labels = [
       available ? (usage?.status == "stale" ? "Stale cache" : "Cached") : "Usage unavailable"
     ]
-    if let updated = usage?.updatedLabel, updated.hasPrefix("Cached ") {
-      labels.append(String(updated.dropFirst("Cached ".count)))
+    if let updated = Self.cachedUpdateTime(usage?.fetchedAt) {
+      labels.append(updated)
     } else if available {
       labels.append("No cached update time")
     }
     if usage?.partial?.isEmpty == false { labels.append("Partial") }
     if usage?.error?.isEmpty == false { labels.append("Refresh failed") }
     cacheLabel = labels.joined(separator: " · ")
+  }
+
+  private static func cachedUpdateTime(_ fetchedAt: String?) -> String? {
+    guard let fetchedAt else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let fractional = formatter.date(from: fetchedAt)
+    formatter.formatOptions = [.withInternetDateTime]
+    guard let date = fractional ?? formatter.date(from: fetchedAt), date.timeIntervalSince1970 > 0
+    else { return nil }
+    return date.formatted(date: .abbreviated, time: .shortened)
   }
 }
 

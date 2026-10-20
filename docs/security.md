@@ -130,25 +130,14 @@ omits untrusted diagnostics.
 ## Vault/key durability
 
 Vault creation and rotation store a fresh key before publishing its encrypted
-envelope. The key is read back and compared with the generated value before
-replacement. After the atomic write succeeds, the manager reads and decrypts
-the published envelope using the credential store and verifies its key ID
-before deleting the previous key. Rotation takes the old ID from the same
-envelope it decrypted.
+envelope. The new key and published vault must both pass read-back verification
+before the previous key is deleted. Any write or verification failure retains
+the keys, including initial creation, uncertain replacement, and failed
+post-replacement durability checks. Recovery uses the surviving envelope's key
+ID without plaintext backups or in-memory recovery state. See the
+[publication protocol and write-error states](architecture.md#vaultkey-lifecycle).
 
-Atomic write errors distinguish replacement not attempted, replacement outcome
-uncertain, and replacement completed with a later failure. A failed replacement
-call is uncertain even if it usually leaves the destination unchanged. Success
-requires temporary-file sync and close, platform replacement, and the platform's
-parent-directory durability step. Temporary-file close/removal errors preserve
-the original error and publication classification.
-
-No key-store rollback deletion runs after a failed or interrupted write,
-including initial creation. Both keys are retained when publication or
-verification is uncertain. A fresh process decrypts the surviving envelope
-using its key ID, without plaintext recovery files or in-memory recovery state;
-a later rotation can proceed from that envelope. Initialization checks that
-the vault path is absent before creating an empty vault. An unavailable key
+An empty vault is created only if the vault path is absent; an unavailable key
 cannot cause an existing vault to be reinitialized.
 
 If previous-key deletion fails or has an uncertain outcome, the error states

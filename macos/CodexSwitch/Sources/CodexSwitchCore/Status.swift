@@ -98,32 +98,6 @@ public struct CachedUsage: Decodable, Equatable, Sendable {
   public let error: String?
 
   public var isStaleOrUnavailable: Bool { status != "fresh" }
-
-  public var summary: String {
-    guard status == "fresh" || status == "stale" else { return "Usage unavailable" }
-    var parts = [planType?.capitalized ?? "Plan unknown"]
-    if let limit = rateLimits?.main {
-      if let primary = limit.primary { parts.append(primary.summary(fallback: "Primary")) }
-      if let secondary = limit.secondary { parts.append(secondary.summary(fallback: "Secondary")) }
-    }
-    parts.append(status == "stale" ? "Stale cache" : "Cached")
-    if partial?.isEmpty == false { parts.append("Partial") }
-    if error?.isEmpty == false { parts.append("Refresh failed") }
-    return parts.joined(separator: " · ")
-  }
-
-  public var updatedLabel: String {
-    guard let fetchedAt else { return "No cached update time" }
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let fractional = formatter.date(from: fetchedAt)
-    formatter.formatOptions = [.withInternetDateTime]
-    guard let date = fractional ?? formatter.date(from: fetchedAt), date.timeIntervalSince1970 > 0
-    else {
-      return "No cached update time"
-    }
-    return "Cached " + date.formatted(date: .abbreviated, time: .shortened)
-  }
 }
 
 public struct RateLimits: Decodable, Equatable, Sendable {
@@ -146,16 +120,4 @@ public struct QuotaWindow: Decodable, Equatable, Sendable {
   public let usedPercent: Int
   public let windowDurationMins: Int?
   public let resetsAt: Int64?
-
-  func summary(fallback: String) -> String {
-    let label: String
-    switch windowDurationMins {
-    case 300: label = "5h"
-    case 10080: label = "Week"
-    case let minutes? where minutes > 0: label = "\(minutes)m"
-    default: label = fallback
-    }
-    // Clamp without arithmetic on an untrusted, potentially extreme integer.
-    return "\(label) \(100 - min(100, max(0, usedPercent)))% left"
-  }
 }

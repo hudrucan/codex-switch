@@ -116,8 +116,15 @@ public final class AppModel: ObservableObject {
     defer { phase = .idle }
     do {
       try await applications.openCodex()
+    } catch {
+      show(error, fallback: "Codex could not be opened.")
+      return
+    }
+    do {
+      // Opening an app changes process state without reopening the menu.
+      status = try await client.status()
       errorMessage = nil
-    } catch { show(error, fallback: "Codex could not be opened.") }
+    } catch { show(error, fallback: "Codex opened, but cached status could not be reloaded.") }
   }
 
   private func readStatus() async throws -> UIStatus {
@@ -214,9 +221,16 @@ public final class AppModel: ObservableObject {
     phase = .switching
     do {
       try await client.use(alias: alias)
+      // Keep the operation locked until its final cached status is available.
+      // A read failure must not retry the already successful switch.
+      do {
+        status = try await client.status()
+        errorMessage = nil
+      } catch {
+        show(error, fallback: "Account switched, but cached status could not be reloaded.")
+      }
       clearPending()
       phase = .idle
-      await menuOpened()
     } catch {
       show(error, fallback: "The guarded switch failed. No process bypass was attempted.")
       // Error output is not a machine-readable process API. Re-observe instead of parsing it.

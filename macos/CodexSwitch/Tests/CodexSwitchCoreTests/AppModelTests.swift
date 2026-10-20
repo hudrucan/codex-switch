@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import Testing
 
@@ -259,6 +260,78 @@ struct AppModelTests {
     await refreshing.value
     #expect(await executor.commands == [.refreshUsage, .status])
     #expect(applications.terminations.isEmpty)
+  }
+
+  @Test(arguments: [false, true])
+  func switchingStaysLockedThroughStatusReload(statusFails: Bool) async {
+    let useGate = ExecutionGate()
+    let reloadGate = ExecutionGate()
+    let (model, executor, applications, _) = makeModel([
+      .init(command: .status, output: success(statusData())),
+      .init(command: .status, output: success(statusData())),
+      .init(command: .use("personal"), output: switchOutput, gate: useGate),
+      .init(
+        command: .status,
+        output: statusFails ? failedOutput() : success(statusData(active: "b")),
+        gate: reloadGate),
+    ])
+    await model.menuOpened()
+    let lastGood = model.status
+    var phases: [AppModel.Phase] = []
+    let observation = model.$phase.dropFirst().sink { phases.append($0) }
+    let switching = Task { await model.beginSwitch(accountID: "b") }
+    await useGate.waitForEntry()
+    #expect(model.phase == .switching)
+    await model.beginSwitch(accountID: "a")
+    await model.refreshUsage()
+    await model.openCodex()
+    await model.menuOpened()
+    model.cancelSwitch()
+    await useGate.resume()
+    await reloadGate.waitForEntry()
+    #expect(model.phase == .switching)
+    #expect(!phases.contains(.idle))
+    await model.beginSwitch(accountID: "a")
+    await model.menuOpened()
+    await model.refreshUsage()
+    await model.openCodex()
+    await reloadGate.resume()
+    await switching.value
+    #expect(model.phase == .idle)
+    #expect(phases.last == .idle)
+    #expect(await executor.commands == [.status, .status, .use("personal"), .status])
+    #expect(applications.terminations.isEmpty)
+    if statusFails {
+      #expect(model.status == lastGood)
+      #expect(model.errorMessage != nil)
+    } else {
+      #expect(model.status?.activeAccountID == "b")
+      #expect(model.errorMessage == nil)
+    }
+    withExtendedLifetime(observation) {}
+  }
+
+  @Test(arguments: [false, true])
+  func openingCodexReloadsCachedProcessStatus(statusFails: Bool) async {
+    let (model, executor, _, trace) = makeModel([
+      .init(command: .status, output: success(statusData())),
+      .init(
+        command: .status,
+        output: statusFails ? failedOutput() : success(statusData(processes: guiProcesses))),
+    ])
+    await model.menuOpened()
+    let previous = model.status
+    await model.openCodex()
+    #expect(model.phase == .idle)
+    #expect(trace.events == ["status", "open", "status"])
+    #expect(await executor.commands == [.status, .status])
+    if statusFails {
+      #expect(model.status == previous)
+      #expect(model.errorMessage != nil)
+    } else {
+      #expect(model.status?.codexProcesses.count == 1)
+      #expect(model.errorMessage == nil)
+    }
   }
 
   @Test func nativeOpenFailureIsSafeAndIndependentOfSwitching() async {

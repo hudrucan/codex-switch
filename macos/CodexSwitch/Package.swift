@@ -8,6 +8,6 @@ let package = Package(
   targets: [
     .target(name: "CodexSwitchCore"),
     .executableTarget(name: "CodexSwitchApp", dependencies: ["CodexSwitchCore"]),
-    .testTarget(name: "CodexSwitchCoreTests", dependencies: ["CodexSwitchCore"]),
+    .testTarget(name: "CodexSwitchCoreTests", dependencies: ["CodexSwitchCore", "CodexSwitchApp"]),
   ]
 )

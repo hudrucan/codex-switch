@@ -50,6 +50,11 @@ test doubles instead.
 
 ## Menu and switching behavior
 
+The menu-bar icon uses two overlapping squares. The menu highlights the observed
+current account with a centered plan badge and two compact quota meters; saved
+accounts appear below with their own cache labels. It follows the system light
+or dark appearance.
+
 Opening the menu while idle reads only `codex-switch ui status --json`. The
 menu labels usage as cached, shows its last fetch time, and distinguishes stale,
 partial, and unavailable data. Percentages show remaining quota, derived from
@@ -61,8 +66,10 @@ Only **Refresh Usage** invokes
 `codex-switch account list --refresh --json`, followed by a status read. A
 command failure, per-account refresh error, or subsequent status error preserves
 the previous successful menu data. Operations and confirmation flows exclude
-concurrent refreshes and switches. Errors are fixed local messages; raw stderr
-and decoding diagnostics are never displayed or logged.
+concurrent refreshes and switches. The menu stays locked through the final cached
+status read after switching. Progress overlays the existing content without
+resizing the menu; fast operations do not flash a spinner. Errors are fixed
+local messages; raw stderr and decoding diagnostics are never displayed or logged.
 
 Choosing another account first obtains fresh status. With no Codex process
 reported, it calls exactly `codex-switch use <alias> --json`. Aliases beginning
@@ -88,12 +95,13 @@ and chooses **Retry Switch**. Cancel is available while awaiting confirmation;
 quit/open/refresh/switch controls are disabled during in-flight operations.
 
 **Open Codex** independently uses `NSWorkspace`, preferring the configured Codex
-bundle identifier and then ChatGPT. It never switches accounts. No AppleScript,
-Automation entitlement, shell, or arbitrary PID kill is used for application
-termination.
+bundle identifier and then ChatGPT, then reads cached status once to update the
+process indicator. It never switches accounts or automatically reopens Codex
+after Quit & Switch. No AppleScript, Automation entitlement, shell, or arbitrary
+PID kill is used for application termination.
 
-Distribution signing/notarization, release/installation automation, icons,
-login items, automatic refresh, and automated account rotation are outside this
-implementation. Real GUI launch, menu lifecycle, and native quit/force-quit
-behavior still require an explicit manual acceptance run with a reviewed bundle;
-unit tests verify the state machine through doubles.
+Custom app artwork, distribution signing/notarization, release/installation
+automation, login items, automatic refresh, and automated account rotation are
+outside this implementation. Real GUI launch, menu lifecycle, and native
+quit/force-quit behavior still require an explicit manual acceptance run with a
+reviewed bundle; unit tests verify the state machine through doubles.

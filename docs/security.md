@@ -2,263 +2,241 @@
 
 ## Protected assets
 
-- ChatGPT access tokens
-- ChatGPT refresh tokens
-- ID tokens and their account metadata
-- portable vault backups
+- ChatGPT access tokens, refresh tokens, and ID tokens
+- Authentication documents and their account/workspace metadata
+- Vault encryption keys, encrypted vaults, and portable backups
 
-Saved profiles are encrypted with XChaCha20-Poly1305. A separate random key is
-stored in macOS Keychain, Windows Credential Manager, or Linux Secret Service.
-The key is never stored next to the ciphertext.
-
-On WSL2, where a Linux desktop Secret Service is commonly unavailable, the key
-is protected by Windows DPAPI for the current Windows user. The resulting
-ciphertext is stored in HKCU, separate from the encrypted vault in the WSL
-filesystem. The embedded PowerShell bridge is static; secret values travel over
-standard input, never process arguments, and bridge diagnostics are redacted.
-
-The active profile must be readable by Codex and is therefore projected into
-the officially supported plaintext file store. That file is created with mode
-`0600` on Unix. On Windows it lives in the current user's profile and is
-published with a replace-existing operation.
-
-## Threat boundaries
+## Threat and trust boundaries
 
 The current operating-system user is trusted. A malicious process running as
 that user can observe or use the same credentials Codex can use. The project
-focuses on:
+focuses on preventing multi-account secrets from entering ordinary JSON/config
+files, avoiding accidental disclosure in diagnostics or repository artifacts,
+restricting access by other local users, and preventing partial, stale,
+concurrent, and path-traversing writes.
 
-- preventing multi-account secrets from entering ordinary JSON/config files;
-- avoiding accidental logs, shell history, issue attachments, and repository
-  commits;
-- preventing other local users from reading stored files;
-- preventing partial, stale, concurrent, and path-traversing writes.
+The official Codex CLI owns login and the App Server usage protocol. The
+operating-system credential store and filesystem supply key storage and atomic
+publication primitives. Binary distribution additionally trusts the configured
+GitHub repository/workflows and HTTPS certificate roots, as described below.
 
-## Operational rules
+## Credential and storage guarantees
 
-- Commands never expose a token retrieval operation.
-- JSON output is intentionally based on dedicated public view types.
-- Usage queries create per-profile temporary homes with mode `0700` and
-  credential files with mode `0600`, then remove them after the App Server exits.
-- The usage cache contains rate limits, earned-reset counts and metadata,
-  aggregate token statistics, timestamps, and public account metadata only. It
-  never contains authentication documents.
-- A token refreshed during an isolated query is accepted only after account,
-  workspace, and refresh-generation checks. Active-file updates use a
-  compare-before-replace check under the shared operation lock. A validated
-  newer generation is preserved even when the accompanying usage request fails,
-  so retries do not fall back to a rotated token.
-- Active-account detection uses the live account and workspace identifiers;
-  stale recorded state, aliases, and email addresses cannot redirect live
-  credentials into another saved profile. Synchronization rechecks the live
-  file hash before committing derived state.
-- Real credentials are forbidden in tests and fixtures.
-- The Linux desktop implementation fails closed when Secret Service is absent.
-  WSL fails closed when neither the Windows DPAPI bridge nor Secret Service is
-  available; it never creates a plaintext key fallback.
-- Portable backups require a passphrase of at least 12 characters and use
-  Argon2id before XChaCha20-Poly1305 encryption.
-- Authentication documents larger than the configured limit are rejected.
-- A symlink at a managed destination is rejected instead of followed.
+Saved profiles are encrypted with XChaCha20-Poly1305. A separate random key is
+stored in macOS Keychain, Windows Credential Manager, or Linux Secret Service;
+it is never stored next to the ciphertext. WSL can use current-user Windows
+DPAPI with ciphertext in HKCU, separate from the encrypted vault in WSL.
+There is no plaintext vault/key fallback.
 
-## Failed usage queries and diagnostic redaction
+The active profile is projected into Codex's supported plaintext file store.
+The file uses mode `0600` on Unix and lives in the current user's profile on
+Windows, published with replace-existing semantics. Switching changes only
+`auth.json` and switcher-owned vault/state; sessions, databases, configuration,
+Skills, MCP settings, and UI state remain in the shared `CODEX_HOME`.
 
-After an isolated App Server starts, every return first terminates/reaps it and
-then reads its final authentication file before removing the temporary home.
-Recovery requires a regular, size-limited authentication file, a supported schema,
-the original account identity, and the original workspace when that workspace
-was known. Missing or changed known workspace evidence fails closed. Existing
-token-material/timestamp generation semantics are preserved: only a validated
-newer generation advances retry inputs and saved credentials; older, conflicting,
-cross-account, cross-workspace, malformed, and ambiguous candidates are rejected.
+Unknown fields in supported authentication JSON are preserved. Unsupported
+modes, invalid schemas, ambiguous identities/generations, and documents above
+the configured size limit are rejected. Managed destinations reject symlinks.
+Portable backups require a passphrase of at least 12 characters and use Argon2id
+before XChaCha20-Poly1305 encryption. Commands provide no token retrieval API;
+public JSON uses dedicated view types, and the usage cache contains no auth
+documents or tokens.
 
-A valid recovered refresh does not hide an RPC, protocol, process, timeout, or
-cancellation failure. Usage snapshots remain unsuccessful while credentials can
-still be reconciled into the encrypted vault and, when safe, active auth. Retry
-backoff and pre-attempt cancellation retain the latest validated candidate.
-Cache failures and unreadable active state cannot prevent the earlier vault
-reconciliation; uncertain active state is never used to guess a projection.
+## Mutation and concurrency guarantees
 
-Refresh selection and persistence resolve internal profile IDs exactly, without
-alias fallback. A legal alias matching another profile's ID cannot redirect a
-query, suppress a selected profile, or receive another profile's credentials.
-User-provided aliases retain their existing lookup behavior.
+Every vault mutation holds the cross-process vault lock before reading mutable
+state. Operations using live authentication or related state also acquire the
+home lock, always after the vault lock, and release locks in reverse order.
+Home-lock failure aborts the operation and releases the vault lock; it never
+silently falls back to vault-only synchronization. Vault-only commands such as
+rename and key rotation can operate without an existing `CODEX_HOME`.
 
-The same exact-ID rule applies to switcher reconciliation and recorded aliases:
-`state.ActiveProfileID` and observed profile IDs are never interpreted as aliases.
-Observe, Use, and Sync therefore cannot redirect profile A's live credentials,
-workspace metadata, or active state into a profile B whose alias matches A's ID.
-A missing recorded ID leaves the recorded alias unknown. User switch targets
-and account CLI selectors retain their existing lookup behavior. After profile
-creation, add/import-current and unmanaged `Sync --as` use alias-only lookup to
-retrieve the profile just added. An alias equal to an existing ID cannot redirect
-returned metadata or the new active pointer. Such namespace collisions remain
-valid vault data. The production call-site classification is in `architecture.md`.
+Interactive login, passphrase input, and backup preparation occur outside the
+transaction locks. The transaction reloads and validates current vault state.
+Reauthentication captures the intended stable ID and alias before login, then
+requires the same ID to still own the unchanged alias before replacement.
+Removal, rename, and alias reassignment fail closed. Backup merge preserves
+concurrent changes; explicit replacement still validates the current vault.
+
+Internal IDs use exact `FindByID` without alias fallback. User-facing selectors
+retain alias/ID lookup, and post-creation alias-only resolution retrieves the
+new profile deterministically. Legal alias/ID collisions cannot redirect
+internal selection, credentials, metadata, or active state to another profile.
+
+Active identity comes from live account/workspace and credential material,
+never a remembered alias or email. Observation is read-only. Mutating sync uses
+compare-before-replace and the switch recovery journal; normal switching also
+requires the running-Codex process guard. Ambiguous identity and generation
+evidence fail closed. See `architecture.md` for transaction and lookup rules.
+
+## Usage refresh and recovery guarantees
+
+Usage queries use per-profile temporary homes with mode `0700` and auth files
+with mode `0600`. After App Server startup, every exit path stops and reaps the
+child before reading its final auth file, then removes the temporary home.
+Recovery accepts only a regular, size-limited file with a supported schema,
+the original account, and the original workspace when known. Missing or changed
+known workspace evidence fails closed. Only a validated newer generation
+advances retry inputs and saved credentials; older, conflicting, cross-account,
+cross-workspace, malformed, or ambiguous candidates are rejected.
+
+Recovered credentials accompany the original RPC, protocol, process, timeout,
+or cancellation error. They never turn a failed usage query into successful
+usage retrieval. Retry backoff and pre-attempt cancellation retain the latest
+validated candidate. Credential reconciliation and vault persistence precede
+cache loading/writing; unavailable cache or invalid auxiliary active state
+cannot discard an otherwise safe vault refresh. Active auth projection also
+requires a valid live identity and compare-before-replace under both locks.
 
 Explicit `account list --refresh` and `account usage <alias>`/`--all` select
 validated vault profiles before auxiliary failures can abort recovery. Corrupt
-cache, active state, or live authentication can still produce a redacted command
-error after credential persistence; those files are not silently repaired.
-Invalid active state never supplies an implicit selection or permits live
-projection. `--cached` remains offline and does not trigger recovery writes.
+cache, active state, or live auth may still produce a redacted error after
+credential persistence; those files are not silently repaired. Invalid state
+never supplies an implicit selection or permits live projection. `--cached`
+remains offline and does not trigger recovery writes. The cache stores only
+usage snapshots, reset metadata, aggregate token statistics, public account
+metadata, timestamps, and normalized failures.
 
-Raw RPC error messages/data are discarded, and subprocess stderr is sent to a
-discard sink. Public errors are restricted to fixed classifications, fixed method
-names, and numeric RPC codes in a bounded range. They preserve `errors.Is`
-without exposing untrusted causes through formatting or unwrapping. Error
-strings are at most 1024 bytes. Usage-cache load/save and CLI usage views apply
-the same strict allowlist to failure messages, including caches from older
-versions; arbitrary JSON field names and decoder diagnostics are not echoed.
-Existing unsafe messages are not rewritten on a read-only cache load, but are
-redacted in memory and on the next save. Public JSON keys and vault formats do
-not change; diagnostic text is intentionally less detailed.
+## Diagnostic and redaction guarantees
 
-Recovery cannot reconstruct a refresh that was never written, was truncated, or
-cannot be identity/generation-validated. A failed vault write or unavailable
-credential store still limits persistence; P1 retains its key-recovery behavior.
-Cleanup is best effort when the operating system cannot kill/reap a process or
-remove files; such failure is reported without reading credentials from an
-unconfirmed running child. Tests use synthetic helper processes and do not
-verify live OAuth or every Codex App Server version.
+Raw RPC messages/data are discarded and subprocess stderr goes to a discard
+sink. Public errors use fixed classifications/method names and bounded numeric
+RPC codes, preserving `errors.Is` without exposing untrusted causes through
+formatting or unwrapping. Strings are bounded to 1024 bytes.
 
-## Vault key publication and recovery
+Retries, usage-cache load/save, and CLI usage views share a strict allowlist for
+failure messages. Arbitrary JSON field names and decoder diagnostics are not
+echoed. Unsafe messages from older caches are redacted in memory on load and on
+the next save; a read-only load does not rewrite the cache. Public JSON schemas,
+vault formats, and storage formats remain compatible; error text deliberately
+omits untrusted diagnostics.
+
+## Vault/key durability
 
 Vault creation and rotation store a fresh key before publishing its encrypted
 envelope. The key is read back and compared with the generated value before
-replacement. After the atomic write reports success, the manager reads and
-decrypts the published envelope using the credential store and checks its key
-identifier before deleting the previous key. Rotation uses the old identifier
-from the same envelope that was decrypted, rather than a separate file read.
+replacement. After the atomic write succeeds, the manager reads and decrypts
+the published envelope using the credential store and verifies its key ID
+before deleting the previous key. Rotation takes the old ID from the same
+envelope it decrypted.
 
 Atomic write errors distinguish replacement not attempted, replacement outcome
 uncertain, and replacement completed with a later failure. A failed replacement
-call is treated as uncertain even if it usually leaves the destination
-unchanged. Success requires temporary-file sync and close, platform replacement,
-and the platform's parent-directory durability step. Temporary-file close and
-removal failures are included in the error instead of silently discarded.
+call is uncertain even if it usually leaves the destination unchanged. Success
+requires temporary-file sync and close, platform replacement, and the platform's
+parent-directory durability step. Temporary-file close/removal errors preserve
+the original error and publication classification.
 
-No key-store rollback deletion runs on a failed or interrupted write, including
-initial creation. Both old and new keys are retained when publication or
-verification is uncertain; a fresh process uses the surviving envelope's key
-identifier to decrypt it. This needs no new vault format or plaintext recovery
-file. A later rotation can proceed from whichever valid envelope survived.
-Initialization checks that the vault path itself is absent before creating an
-empty vault; a missing key-store resource cannot trigger reinitialization of an
-existing vault.
+No key-store rollback deletion runs after a failed or interrupted write,
+including initial creation. Both keys are retained when publication or
+verification is uncertain. A fresh process decrypts the surviving envelope
+using its key ID, without plaintext recovery files or in-memory recovery state;
+a later rotation can proceed from that envelope. Initialization checks that
+the vault path is absent before creating an empty vault. An unavailable key
+cannot cause an existing vault to be reinitialized.
 
-If deletion of the previous key fails or has an uncertain outcome, the command
-returns an error explicitly stating that rotation committed but cleanup could
-not be confirmed. The current vault still has its verified new key. Failed or
-interrupted operations can leave orphaned keys in the operating-system store;
-they are deliberately not garbage-collected automatically. A leftover encrypted
-temporary file is not selected as the active vault.
+If previous-key deletion fails or has an uncertain outcome, the error states
+that rotation committed but cleanup was not confirmed. The current vault has
+its verified new key. Failed/interrupted operations may leave orphaned keys;
+automatic garbage collection is deliberately absent. A leftover encrypted
+temporary file is never selected as the active vault.
 
-These guarantees assume the credential store preserves acknowledged writes and
-the filesystem honors its sync/replacement primitives. Read-back verification
-detects immediately missing or incorrect keys; it cannot guarantee hardware
-durability or availability of an offline credential store. Unix syncs the parent
-directory; Windows retains the existing write-through `MoveFileEx` replacement
-without a separate directory sync. Fault-injection tests model software failure
-and interruption boundaries, including helper-process exit before and after
-publication using synthetic persistent stores. They do not simulate physical
-power loss or storage corruption.
+## Platform secret-store boundaries
 
-## Platform credential-store adapters
+macOS invokes the system `security` utility without a shell and supplies the
+vault key directly to `-w`; that utility treats `-w` without a value as an
+interactive prompt. The key can briefly be visible to processes running as the
+same user, within the stated trust boundary.
 
-The macOS implementation invokes the system `security` utility without a shell.
-Because that utility treats `-w` without a value as an interactive prompt rather
-than reading standard input, the adapter supplies the vault key directly to
-`-w`. The value can therefore be visible briefly to processes running as the
-same operating-system user, which is inside this project's trust boundary.
-Linux sends values to `secret-tool` over standard input. Windows calls the
-native Credential Manager API directly. WSL invokes Windows PowerShell without
-a profile and uses current-user DPAPI plus a hashed registry value name.
+Linux sends values to `secret-tool` on standard input and fails closed without
+Secret Service. Windows calls Credential Manager directly. WSL invokes a static
+Windows PowerShell bridge without a profile, uses current-user DPAPI and a
+hashed registry value name, and sends secrets over standard input. Bridge
+output is redacted. WSL fails closed when neither its DPAPI bridge nor Secret
+Service is available.
 
 ## Binary distribution and update trust
 
-The binary distribution trust root is the GitHub repository
-`hudrucan/codex-switch`, independently of the unchanged upstream Go module path.
-Source builds default to development provenance. GoReleaser OSS uses
-`envOrDefault` to keep ordinary builds and snapshots in development unless
-`CODEX_SWITCH_BUILD_CHANNEL` is explicitly supplied. The trusted release
-workflow supplies `release` only to its GoReleaser step. Mutating update
-requires a canonical stable installed version, the exact fork repository stamp,
-and the release channel stamp. A source build with a module-derived version still
-cannot self-update. Read-only `--check` queries the fork without claiming that
-the current executable is installable. There is no automatic upstream migration.
-No existing fork release or successful live installation is asserted by this
-hardening work; absent releases fail closed.
+The binary distribution trust root is `hudrucan/codex-switch`, independently of
+the Go module path. Source builds default to development provenance. GoReleaser
+OSS uses `envOrDefault` for `CODEX_SWITCH_BUILD_CHANNEL`, defaulting to development;
+the trusted release workflow supplies `release` only to its GoReleaser step.
+Mutating update requires a canonical stable installed version and the exact
+fork repository and release channel stamps. A source build with a module-derived
+version cannot self-update. Read-only `--check` queries the fork without claiming
+update eligibility. Missing fork releases fail closed; there is no upstream
+migration/fallback.
 
-Provenance stamps are build-policy markers, not signatures. A user who builds
-with arbitrary linker flags can forge them. Release publication and GitHub
-repository/workflow control are trusted, together with HTTPS certificate roots.
-Checksums from the same release detect corruption and bind the exact archive;
-they do not independently authenticate the publisher. The workflow creates
-GitHub attestations and SBOMs, but the updater does not verify attestations.
-Runtime attestation verification would need a separate trusted verifier and
-policy (such as a GitHub CLI/Sigstore dependency); it is deliberately not faked
-or replaced by a custom signing protocol.
+Linker provenance is a policy marker, not a signature; arbitrary linker flags
+can forge it. Same-release checksums detect corruption and bind an exact archive,
+but do not independently authenticate the publisher. The workflow creates GitHub
+attestations and SBOMs; the runtime updater does not verify attestations. Such
+verification requires a separate trusted verifier and policy.
 
 Only canonical stable `vMAJOR.MINOR.PATCH` releases are installable. Drafts,
 prereleases, duplicate JSON keys/assets/checksum records, empty artifacts, size
-disagreements, and foreign origins are rejected. Metadata is limited to 2 MiB,
-checksums to 1 MiB, archives to 128 MiB, and each executable to 64 MiB. Archive
-entries are limited to 256 with 128 MiB total file data. Only a root executable
-and the release's license/README/notice files are allowed. Paths, duplicates,
-links, special entries, and extended tar headers cannot select an executable.
-Tar input is restricted to USTAR, as emitted for the short paths in this release
-configuration; GNU/PAX extensions are not interpreted as an alternate selector.
-The entire archive is checked, including entries after the executable.
+mismatches, and foreign origins are rejected. Metadata is limited to 2 MiB,
+checksums to 1 MiB, archives to 128 MiB, and each executable to 64 MiB. Archives
+are limited to 256 entries and 128 MiB total file data. Only a root executable
+and approved license/README/notice files are accepted. Paths, duplicates, links,
+special entries, and extended tar headers cannot select an executable. Tar
+input is restricted to USTAR; gzip trailers and trailing tar/gzip data are
+validated. Validation includes every entry, even after the executable.
 
-HTTP clients send no credentials, cookies, or inherited proxy authentication.
-Initial requests use the exact fork API/download URLs. Metadata redirects are
+HTTP sends no credentials, cookies, or inherited proxy authentication. Initial
+URLs must identify the exact fork API/download origin. Metadata redirects are
 rejected. A download may redirect once from its fork GitHub URL to HTTPS on
-`release-assets.githubusercontent.com`, under the official release-asset path;
-arbitrary hosts, ports, userinfo, and subsequent redirects are rejected. This host
-is documented in GitHub's [runner network requirements](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
-New GitHub download hosts require policy review rather than automatic trust.
-Remote bodies and local filesystem failures are not echoed as diagnostics.
+`release-assets.githubusercontent.com` under its official release-asset path.
+Arbitrary hosts, ports, userinfo, and subsequent redirects are rejected. GitHub
+documents that host in its [runner network requirements](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+New download hosts require policy review. Remote bodies and local filesystem
+failures are excluded from diagnostics.
 
-Verification finishes before any executable write. The old self-update library
-used predictable `.new`/`.old` paths, truncated a pre-existing temporary path,
-did not sync its staged file, and moved the old executable away before publishing
-the new one. The updater now uses the existing P1 atomic writer: random exclusive
-temporary files, file sync, one platform replacement, and directory durability.
+Executable updates validate all artifacts before one atomic replacement of the
+existing executable. Staging uses random exclusive temporary files, file sync,
+platform replacement, and directory durability. Targets must be regular files
+with canonical parent paths; symlinks and setuid/setgid targets are rejected.
+A separate `<executable>.update.lock` coordinates updates/installations without
+account/vault access. Permissions and compare-before-replace are preserved.
+Post-replacement durability errors report uncertainty and retain the published
+executable. No rename-away fallback creates an absent executable path.
 
-The target must be a regular, non-symlink file with a canonical parent path;
-setuid/setgid targets are rejected. A separate `<executable>.update.lock` guards
-updates and installation, without accessing any account/vault state. Existing
-permissions and compare-before-replace checks are retained. Windows may refuse
-replacement of a running executable: failure retains the old path, with no
-rename-away fallback. Post-replacement durability errors report uncertainty;
-they do not delete the published executable. Same-user filesystem races and
-hardware durability remain platform trust assumptions.
+Shell and PowerShell installers run a standard-library Python 3.9+ verifier from
+the same reviewed checkout, without a Go/CLI runtime dependency. Missing Python
+fails before download. Only verified bytes are staged beside the destination
+and atomically replaced; archive content is never executed. Symlink destinations
+and uncertain concurrent changes fail closed. Installers do not request
+elevation automatically.
 
-Shell and PowerShell installers invoke a single standard-library Python 3.9+
-verifier from the same reviewed checkout. This explicit installer prerequisite
-replaces fragile shell JSON/checksum parsing and keeps the two platforms on one
-validation policy; it adds no Go or CLI runtime dependency. Missing Python fails
-before download. Installers extract only verified bytes into a random temporary
-file beside the destination, never run archive content, and atomically replace
-after validation. Symlink destinations and uncertain concurrent changes fail
-closed. They do not request elevation automatically.
+The release workflow verifies module integrity, a clean tag-matching worktree,
+and tag ancestry against `refs/remotes/origin/main` explicitly refreshed from
+`origin`'s `refs/heads/main`. Failed fetch, missing branch, or unreachable commit
+aborts release even if a stale reference exists. This proves source reachability
+in fetched main history, not human review. GitHub repository/workflow control is
+the trust root. Administrators must protect main with review requirements and
+restrict creation, movement, and deletion of `v*` tags to authorized release
+actors. These are required repository-side operational controls, not settings
+enforced by this CLI. Direct Actions are pinned to commits, tool versions are
+explicit, and Dependabot monitors Go and Actions weekly.
 
-Release builds verify module integrity and clean, tag-matching source instead of
-running `go mod tidy`. Before building, the workflow explicitly fetches
-`refs/heads/main` from checkout's `origin` into `refs/remotes/origin/main` and
-requires the tag commit to be its ancestor. A failed fetch, missing branch, or
-unreachable commit aborts the release, even if a stale local reference exists.
-This verifies source reachability in freshly fetched main history; it does not
-prove that a human reviewed a commit. GitHub repository and workflow control
-remain the trust root. Repository administrators must protect main with review
-requirements and restrict creation, movement, and deletion of `v*` release tags
-to authorized release actors. Those repository-side controls are operational
-requirements, not settings enforced or changed by this source patch.
+## Residual risks and limitations
 
-Linker metadata is deterministic; builds without the explicit workflow marker
-remain development builds. Direct GitHub Actions are pinned to public commits
-resolved during this audit; tool versions are explicit and Dependabot already monitors Go and
-Actions weekly. Pins reduce mutable-reference exposure, but hosted runners,
-action transitive code/downloaders, Go's checksum infrastructure, and GitHub
-release control remain trusted. Builds are not claimed to be fully hermetic or
-independently reproducible. No release is performed by local tests.
+- Credential-store acknowledged writes and filesystem sync/replacement primitives
+  are trusted. Read-back detects immediately missing/incorrect keys, but cannot
+  guarantee physical storage durability or offline credential-store availability.
+  Unix syncs the parent directory; Windows uses write-through `MoveFileEx` without
+  a separate directory sync.
+- A refresh never written, truncated, or lacking identity/generation evidence
+  cannot be recovered. Failed vault writes or an unavailable store may prevent
+  persistence. Cleanup is best effort if the OS cannot stop/reap a process or
+  remove files. Failures are reported without raw diagnostics; auth is not read
+  from an unconfirmed running child.
+- Windows may refuse replacement of a running executable; failure retains the
+  old path. Same-user filesystem races remain within the local trust boundary.
+- Hosted runners, transitive Action code/downloaders, Go checksum infrastructure,
+  GitHub release control, and TLS remain trusted. Builds are not claimed to be
+  fully hermetic or independently reproducible.
+- Synthetic offline tests do not verify live OAuth, every App Server version,
+  physical power loss/storage corruption, native-platform behavior on other
+  systems, or actual hosted release publication. Real credentials are forbidden
+  in development tests and fixtures.

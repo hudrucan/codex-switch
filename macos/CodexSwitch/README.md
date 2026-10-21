@@ -45,13 +45,20 @@ bundle's executable with `CODEX_SWITCH_CLI_PATH` set; running it will read the
 configured live account through the CLI, so development verification must use
 test doubles instead.
 
-The bundle includes `Resources/AppIcon.icns`, using the same mark as the menu
-bar. To regenerate it, run from `macos/CodexSwitch`:
+The bundle includes `Resources/AppIcon.icns`: two layered terminal tiles in navy,
+blue, and violet. The menu-bar template and sidebar assets share its vector
+geometry in `MenuBarIcon.swift`. Template rendering adapts to the system
+appearance. The 18pt menu-bar outline preserves the tilted tiles and full `>_`
+glyph, with a heavier 1.5pt stroke and transparent separation between tiles.
+`Resources/sidebar-outline.svg` and its transparent 24px PNG preview
+provide a lighter outline variant for dark sidebars. These are reusable assets;
+the app's menu bar uses the outline template. To regenerate all assets, run from
+`macos/CodexSwitch`:
 
 ```sh
 mkdir -p .build
 xcrun swiftc -swift-version 6 -parse-as-library Sources/CodexSwitchApp/MenuBarIcon.swift scripts/render-app-icon.swift -o .build/render-app-icon
-.build/render-app-icon .build/AppIcon.iconset
+.build/render-app-icon .build/AppIcon.iconset Resources
 iconutil -c icns .build/AppIcon.iconset -o Resources/AppIcon.icns
 ```
 
@@ -64,7 +71,7 @@ available count, independently of how many detail rows the service returns.
 Saved-account details use four left-aligned lines with compact 12-hour reset
 times; each account's cache timestamp stays with that account.
 The menu follows the system appearance and keeps process details collapsed by
-default. Its monochrome icon shows a person with two switching arrows.
+default. Its monochrome icon shows two overlapping terminal tiles.
 
 Opening the menu while idle first reads `codex-switch ui status --json`. Regaining
 focus while the menu remains visible does not reread status or interrupt a click

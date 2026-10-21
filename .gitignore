@@ -3,6 +3,7 @@
 /bin/
 /codex-switch
 /codex-switch.exe
+/.build
 
 # Local and editor state
 .DS_Store

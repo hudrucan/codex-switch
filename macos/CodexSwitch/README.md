@@ -66,8 +66,10 @@ times; each account's cache timestamp stays with that account.
 The menu follows the system appearance and keeps process details collapsed by
 default. Its monochrome icon shows a person with two switching arrows.
 
-Opening the menu while idle first reads `codex-switch ui status --json`. The
-menu labels usage as cached, shows its last fetch time, and distinguishes stale,
+Opening the menu while idle first reads `codex-switch ui status --json`. Regaining
+focus while the menu remains visible does not reread status or interrupt a click
+on Open Codex after Quit & Switch. Closing and reopening the menu still reads
+status again. The menu labels usage as cached, shows its last fetch time, and distinguishes stale,
 partial, and unavailable data. Percentages show remaining quota, derived from
 the CLI's `usedPercent`. Unknown JSON fields are tolerated; status schemas other
 than version 1 are rejected. Unmanaged, ambiguous, conflicting, or unknown

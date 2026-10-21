@@ -64,8 +64,11 @@ fail without fallback. These checks trust the current user; they do not verify
 a code signature.
 
 `macos/CodexSwitch` contains Codex Switch, a SwiftUI `MenuBarExtra` agent app.
-Opening its menu reads cached status first. If any account has no valid cache
-timestamp, a future timestamp, or a snapshot older than five minutes, that open
+Opening its menu reads cached status first. The observer tracks window visibility,
+not key-window focus. A visible menu losing and regaining focus does not start
+another status read or disable the action receiving that focus click. Actual
+hide/reopen transitions still trigger a new cached read. If any account has no
+valid cache timestamp, a future timestamp, or a snapshot older than five minutes, that open
 event can refresh saved accounts sequentially through
 `codex-switch account usage --json -- <alias>` and reload status.
 An empty account list never triggers refresh. Closing the menu before the status

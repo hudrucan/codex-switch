@@ -542,9 +542,9 @@ private struct MenuRowStyle: ButtonStyle {
   }
 }
 
-// Window-style MenuBarExtra content can survive being closed. Observe its actual
-// window becoming key instead of relying on SwiftUI view construction as "open".
-private struct MenuOpenObserver: NSViewRepresentable {
+// Window-style MenuBarExtra content survives closing. Observe visibility, not
+// focus: regaining focus must not start a status read that disables the clicked row.
+struct MenuOpenObserver: NSViewRepresentable {
   let opened: @MainActor () async -> Void
   let closed: @MainActor () -> Void
 
@@ -561,6 +561,7 @@ private struct MenuOpenObserver: NSViewRepresentable {
     var closed: @MainActor () -> Void
 
     private var openTask: Task<Void, Never>?
+    private var menuIsVisible = false
 
     init(opened: @escaping @MainActor () async -> Void, closed: @escaping @MainActor () -> Void) {
       self.opened = opened
@@ -575,22 +576,32 @@ private struct MenuOpenObserver: NSViewRepresentable {
       NotificationCenter.default.removeObserver(self)
       windowClosed()
       guard let window else { return }
-      NotificationCenter.default.addObserver(
-        self, selector: #selector(windowOpened), name: NSWindow.didBecomeKeyNotification,
-        object: window
-      )
-      for name in [NSWindow.didResignKeyNotification, NSWindow.willCloseNotification] {
+      for name in [
+        NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+        NSWindow.didChangeOcclusionStateNotification,
+      ] {
         NotificationCenter.default.addObserver(
-          self, selector: #selector(windowClosed), name: name, object: window)
+          self, selector: #selector(presentationChanged), name: name, object: window)
       }
-      if window.isVisible { windowOpened() }
+      NotificationCenter.default.addObserver(
+        self, selector: #selector(windowClosed), name: NSWindow.willCloseNotification,
+        object: window)
+      presentationChanged()
     }
 
-    @objc private func windowOpened() {
+    @objc private func presentationChanged() {
+      guard window?.isVisible == true else {
+        windowClosed()
+        return
+      }
+      guard !menuIsVisible else { return }
+      menuIsVisible = true
       openTask?.cancel()
       openTask = Task { await opened() }
     }
     @objc func windowClosed() {
+      guard menuIsVisible else { return }
+      menuIsVisible = false
       openTask?.cancel()
       closed()
     }

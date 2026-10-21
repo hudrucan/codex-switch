@@ -10,6 +10,45 @@ struct RefreshPolicyTests {
     func advance(_ seconds: TimeInterval) { date.addTimeInterval(seconds) }
   }
 
+  @Test(arguments: [false, true])
+  func refreshFeedbackTracksQueryAndReloadWithoutReplacingCache(reloadFails: Bool) async throws {
+    let clock = Clock()
+    let queryGate = ExecutionGate()
+    let reloadGate = ExecutionGate()
+    let (model, executor, _, _) = makeModel(
+      [
+        .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
+        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: queryGate),
+        .init(
+          command: .status,
+          output: reloadFails ? failedOutput() : success(freshStatusData(active: "b")),
+          gate: reloadGate),
+      ], now: { clock.date })
+    await model.menuOpened()
+    let refresh = Task { await model.refreshUsage() }
+    await queryGate.waitForEntry()
+    #expect(model.refreshStartedAt == clock.date)
+    #expect(!model.isReloadingUsage)
+    #expect(model.progressLabel == "Refreshing usage…")
+    #expect(model.status?.activeAccountID == "a")
+    clock.advance(30)
+    model.menuClosed()
+    await queryGate.resume()
+    await reloadGate.waitForEntry()
+    #expect(model.refreshStartedAt == clock.date.addingTimeInterval(-30))
+    #expect(model.isReloadingUsage)
+    #expect(model.progressLabel == "Loading updated status…")
+    #expect(model.status?.activeAccountID == "a")
+    await reloadGate.resume()
+    await refresh.value
+    #expect(model.phase == .idle)
+    #expect(model.refreshStartedAt == nil)
+    #expect(!model.isReloadingUsage)
+    #expect(model.status?.activeAccountID == (reloadFails ? "a" : "b"))
+    #expect((model.errorMessage != nil) == reloadFails)
+    #expect(await executor.commands == [.status, .refreshUsage, .status])
+  }
+
   @Test(arguments: [0.0, 300.0, 301.0])
   func openingMenuRefreshesOnlyWhenCacheIsOlderThanFiveMinutes(age: TimeInterval) async throws {
     let clock = Clock()

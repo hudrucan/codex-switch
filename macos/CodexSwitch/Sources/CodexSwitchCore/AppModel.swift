@@ -13,6 +13,8 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var errorMessage: String?
   @Published public private(set) var pendingAlias: String?
   @Published public private(set) var refreshNotice: String?
+  @Published public private(set) var refreshStartedAt: Date?
+  @Published public private(set) var isReloadingUsage = false
 
   private let client: any CLIClientProtocol
   private let applications: any ApplicationControlling
@@ -48,7 +50,7 @@ public final class AppModel: ObservableObject {
   public var progressLabel: String? {
     switch phase {
     case .loading, .checking: return "Reading cached status…"
-    case .refreshing: return "Refreshing usage…"
+    case .refreshing: return isReloadingUsage ? "Loading updated status…" : "Refreshing usage…"
     case .switching: return "Switching account…"
     case .quitting: return "Waiting for Codex to quit…"
     case .forceQuitting: return "Verifying Force Quit…"
@@ -93,10 +95,16 @@ public final class AppModel: ObservableObject {
     }
     refreshNotice = nil
     nextRefreshAt = now().addingTimeInterval(60)
+    refreshStartedAt = now()
     phase = .refreshing
-    defer { phase = .idle }
+    defer {
+      refreshStartedAt = nil
+      isReloadingUsage = false
+      phase = .idle
+    }
     do {
       try await client.refreshUsage()
+      isReloadingUsage = true
       let updated = try await client.status()
       status = updated
       errorMessage = nil

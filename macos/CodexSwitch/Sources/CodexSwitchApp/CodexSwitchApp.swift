@@ -96,6 +96,7 @@ struct SwitchMenu: View {
         ) {
           Task { await model.refreshUsage() }
         }
+        refreshFeedback
         if let notice = model.refreshNotice {
           Text(notice).font(.system(size: 10)).foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -126,6 +127,32 @@ struct SwitchMenu: View {
     .onChange(of: model.canCancel) { awaitingConfirmation in
       if !awaitingConfirmation { showsProcessDetails = false }
     }
+  }
+
+  private var refreshFeedback: some View {
+    VStack(alignment: .leading, spacing: 3) {
+      if let startedAt = model.refreshStartedAt {
+        HStack(spacing: 4) {
+          if model.isReloadingUsage {
+            Text("Updating menu results")
+          } else if let count = model.status?.accounts.count {
+            Text("Refreshing \(count) \(count == 1 ? "account" : "accounts")")
+          } else {
+            Text("Refreshing saved accounts")
+          }
+          Text("·")
+          Text(startedAt, style: .timer).monospacedDigit().fixedSize()
+          Spacer(minLength: 0)
+        }
+        Text("Showing cached usage. You can close this menu.")
+      } else {
+        Text("Usage is cached. Refresh updates all saved accounts.")
+        Text("Multiple accounts can take longer to refresh.")
+      }
+    }
+    .font(.system(size: 10)).foregroundStyle(.secondary)
+    .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32, alignment: .leading)
+    .padding(.horizontal, 10).padding(.bottom, 6)
   }
 
   private func currentAccount(_ account: Account) -> some View {

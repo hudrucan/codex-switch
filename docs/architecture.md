@@ -75,10 +75,16 @@ Automatic and explicit Refresh Usage share the app's operation exclusion and a
 60-second cooldown from completion. Consecutive refresh or status-reload failures
 delay the next attempt by one, two, then five minutes (capped); a successful
 refresh and reload resets that sequence. The UI retains its previous successful
-data on failure. Deadlines are checked on user actions/menu opens, without timers,
+data on failure. Deadlines are checked on user actions/menu opens, without refresh timers,
 queued retries, or background polling. These limits are in memory per app process
 and reset on relaunch; independent CLI invocations retain existing behavior and
 cross-process locks. Passing a cached reset time never fabricates fresh quota.
+
+Refresh feedback displays elapsed time and the requested account count while
+retaining cached quota, then identifies the final status reload separately.
+The elapsed display only updates presentation; it makes no CLI requests and
+does not infer per-account completion. Closing the menu leaves the existing
+operation's cleanup and recovery intact.
 
 On Unix, process discovery uses the `ps` short executable-name column (`ucomm`)
 so macOS path-column truncation cannot turn `ChatGPT` into `Ch`. The public

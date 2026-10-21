@@ -75,7 +75,7 @@ observations do not receive a safe active marker and block menu switching.
 
 If any account's cache is older than five minutes or its update time is missing,
 invalid, or in the future, opening the menu also refreshes usage once. Closing the
-menu before the cached read completes prevents this refresh. There are no timers
+menu before the cached read completes prevents this refresh. There are no refresh timers
 or queued retries while the menu is open or closed, and passing a reset time
 never assumes quota has returned to 100%.
 
@@ -115,6 +115,12 @@ bundle identifier and then ChatGPT, then reads cached status once to update the
 process indicator. It never switches accounts or automatically reopens Codex
 after Quit & Switch. No AppleScript, Automation entitlement, shell, or arbitrary
 PID kill is used for application termination.
+
+Refresh feedback shows the requested account count and elapsed time, then
+changes to loading updated status when the CLI refresh finishes. This is elapsed
+time, not per-account progress. A fixed-height hint keeps cached quota visible
+and explains that closing the menu lets the current refresh finish. The elapsed
+display does not poll the CLI or start additional refreshes.
 
 Real GUI launch, menu lifecycle, and native quit/force-quit behavior require
 manual acceptance with a reviewed bundle; unit tests verify the state machine

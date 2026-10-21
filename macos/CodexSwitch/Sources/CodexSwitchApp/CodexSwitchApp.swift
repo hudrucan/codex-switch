@@ -81,7 +81,7 @@ struct SwitchMenu: View {
         VStack(alignment: .leading, spacing: 4) {
           Text(message).foregroundStyle(.red)
           if model.status != nil {
-            Text("Showing the last successful status.").foregroundStyle(.secondary)
+            Text("Showing the latest available cached usage.").foregroundStyle(.secondary)
           }
         }
         .font(.system(size: 11)).fixedSize(horizontal: false, vertical: true)
@@ -135,16 +135,17 @@ struct SwitchMenu: View {
         HStack(spacing: 4) {
           if model.isReloadingUsage {
             Text("Updating menu results")
-          } else if let count = model.status?.accounts.count {
-            Text("Refreshing \(count) \(count == 1 ? "account" : "accounts")")
           } else {
-            Text("Refreshing saved accounts")
+            Text("\(model.refreshCompleted)/\(model.refreshTotal) done")
+            if let alias = model.refreshingAlias {
+              Text("· \(alias)").lineLimit(1).truncationMode(.middle)
+            }
           }
           Text("·")
           Text(startedAt, style: .timer).monospacedDigit().fixedSize()
           Spacer(minLength: 0)
         }
-        Text("Showing cached usage. You can close this menu.")
+        Text("Results appear as each account finishes. You can close this menu.")
       } else {
         Text("Usage is cached. Refresh updates all saved accounts.")
         Text("Multiple accounts can take longer to refresh.")
@@ -153,6 +154,21 @@ struct SwitchMenu: View {
     .font(.system(size: 10)).foregroundStyle(.secondary)
     .frame(maxWidth: .infinity, minHeight: 32, maxHeight: 32, alignment: .leading)
     .padding(.horizontal, 10).padding(.bottom, 6)
+  }
+
+  @ViewBuilder
+  private func accountRefreshLabel(_ account: Account) -> some View {
+    if model.phase == .refreshing {
+      if let success = model.refreshResults[account.id] {
+        Text(success ? "Updated" : "Refresh failed · cached usage retained")
+          .font(.system(size: 10)).foregroundStyle(success ? Color.secondary : .orange)
+      } else {
+        Text(model.refreshingAlias == account.alias ? "Refreshing…" : "Waiting to refresh")
+          .font(.system(size: 10)).foregroundStyle(.secondary)
+      }
+    } else {
+      Text(" ").font(.system(size: 10)).accessibilityHidden(true)
+    }
   }
 
   private func currentAccount(_ account: Account) -> some View {
@@ -186,6 +202,7 @@ struct SwitchMenu: View {
       }
       .font(.system(size: 11)).padding(.top, 10)
       .help("Cached earned manual rate-limit resets, separate from scheduled quota resets.")
+      accountRefreshLabel(account)
       Text(usage.compactCacheLabel).font(.system(size: 10))
         .foregroundStyle(account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange)
         .fixedSize(horizontal: false, vertical: true)
@@ -256,6 +273,7 @@ struct SwitchMenu: View {
           SavedQuotaRow(quota: usage.secondary)
           Text("Banked resets · \(usage.bankedResetCount.map(String.init) ?? "Unavailable")")
             .foregroundStyle(.secondary)
+          accountRefreshLabel(account)
           Text(usage.compactCacheLabel)
             .foregroundStyle(
               account.usage?.isStaleOrUnavailable == false ? Color.secondary : .orange

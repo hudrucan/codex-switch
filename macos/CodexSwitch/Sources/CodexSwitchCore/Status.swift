@@ -21,6 +21,19 @@ public struct UIStatus: Decodable, Equatable, Sendable {
     }
   }
 
+  func replacingUsage(for updated: Account) -> UIStatus {
+    UIStatus(
+      schemaVersion: schemaVersion,
+      accounts: accounts.map { account in
+        guard account.id == updated.id else { return account }
+        return Account(
+          id: account.id, alias: account.alias, accountId: account.accountId,
+          workspaceId: account.workspaceId, email: account.email, source: account.source,
+          active: account.active, usage: updated.usage)
+      },
+      observation: observation, codexProcesses: codexProcesses)
+  }
+
   public var canSwitch: Bool {
     switch observation.state {
     case "no_active", "logged_out":

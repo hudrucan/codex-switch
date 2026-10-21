@@ -11,187 +11,251 @@ struct RefreshPolicyTests {
   }
 
   @Test(arguments: [false, true])
-  func refreshFeedbackTracksQueryAndReloadWithoutReplacingCache(reloadFails: Bool) async throws {
+  func completedAccountAppearsBeforeNextAccountFinishes(secondFails: Bool) async throws {
     let clock = Clock()
-    let queryGate = ExecutionGate()
+    let gate = ExecutionGate()
     let reloadGate = ExecutionGate()
-    let (model, executor, _, _) = makeModel(
+    let cached = freshStatusData(fetchedAt: clock.date)
+    let (model, executor, applications, _) = makeModel(
       [
-        .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: queryGate),
+        .init(command: .status, output: success(cached)),
+        .init(command: .refreshUsage("work"), output: success(try refreshedAccount())),
         .init(
-          command: .status,
-          output: reloadFails ? failedOutput() : success(freshStatusData(active: "b")),
-          gate: reloadGate),
+          command: .refreshUsage("personal"),
+          output: secondFails
+            ? failedOutput() : success(try refreshedAccount(alias: "personal", usedPercent: 10)),
+          gate: gate),
+        .init(command: .status, output: failedOutput(), gate: reloadGate),
       ], now: { clock.date })
     await model.menuOpened()
+    let original = model.status
     let refresh = Task { await model.refreshUsage() }
-    await queryGate.waitForEntry()
+    await gate.waitForEntry()
+    #expect(model.phase == .refreshing)
+    #expect(model.refreshCompleted == 1)
+    #expect(model.refreshTotal == 2)
+    #expect(model.refreshingAlias == "personal")
+    #expect(model.refreshResults == ["a": true])
+    #expect(model.status?.accounts[0].usage?.rateLimits?.main.primary?.usedPercent == 20)
+    #expect(model.status?.accounts[1].usage == original?.accounts[1].usage)
+    #expect(model.status?.observation == original?.observation)
+    #expect(model.status?.codexProcesses == original?.codexProcesses)
     #expect(model.refreshStartedAt == clock.date)
-    #expect(!model.isReloadingUsage)
-    #expect(model.progressLabel == "Refreshing usage…")
-    #expect(model.status?.activeAccountID == "a")
     clock.advance(30)
+    // A closed/cancelled menu must not interrupt the current CLI's recovery.
     model.menuClosed()
-    await queryGate.resume()
+    refresh.cancel()
+    await model.refreshUsage()
+    await model.beginSwitch(accountID: "b")
+    await model.openCodex()
+    #expect(await executor.commands == [.status, .refreshUsage("work"), .refreshUsage("personal")])
+    await gate.resume()
     await reloadGate.waitForEntry()
-    #expect(model.refreshStartedAt == clock.date.addingTimeInterval(-30))
     #expect(model.isReloadingUsage)
+    #expect(model.refreshCompleted == 2)
     #expect(model.progressLabel == "Loading updated status…")
-    #expect(model.status?.activeAccountID == "a")
     await reloadGate.resume()
     await refresh.value
+    // Even failure of the final status read cannot discard completed updates.
+    #expect(model.status?.accounts[0].usage?.rateLimits?.main.primary?.usedPercent == 20)
+    #expect(
+      model.status?.accounts[1].usage?.rateLimits?.main.primary?.usedPercent
+        == (secondFails ? 38 : 10))
+    #expect(model.refreshResults["b"] == !secondFails)
+    #expect(model.errorMessage != nil)
     #expect(model.phase == .idle)
     #expect(model.refreshStartedAt == nil)
     #expect(!model.isReloadingUsage)
-    #expect(model.status?.activeAccountID == (reloadFails ? "a" : "b"))
-    #expect((model.errorMessage != nil) == reloadFails)
-    #expect(await executor.commands == [.status, .refreshUsage, .status])
-  }
-
-  @Test(arguments: [0.0, 300.0, 301.0])
-  func openingMenuRefreshesOnlyWhenCacheIsOlderThanFiveMinutes(age: TimeInterval) async throws {
-    let clock = Clock()
-    let cached = freshStatusData(fetchedAt: clock.date.addingTimeInterval(-age))
-    var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(cached))]
-    if age > 300 {
-      steps += [
-        .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-        .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-      ]
-    }
-    let (model, executor, _, _) = makeModel(steps, now: { clock.date })
-    await model.menuOpened()
-    #expect(await executor.commands == (age > 300 ? [.status, .refreshUsage, .status] : [.status]))
-    model.menuClosed()
-    clock.advance(86400)
-    for _ in 0..<10 { await Task.yield() }
+    #expect(applications.terminations.isEmpty)
     #expect(await executor.remaining == 0)
-    #expect(await executor.commands.count == (age > 300 ? 3 : 1))
   }
 
-  @Test(arguments: ["missing", "invalid", "future", "empty"])
-  func unavailableCacheRefreshesButEmptyAccountListDoesNot(state: String) async throws {
+  @Test func failedFirstAccountDoesNotBlockLaterAccount() async throws {
+    let cached = freshStatusData()
+    let gate = ExecutionGate()
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(cached)),
+      .init(command: .refreshUsage("work"), output: failedOutput()),
+      .init(
+        command: .refreshUsage("personal"),
+        output: success(try refreshedAccount(alias: "personal")), gate: gate),
+      .init(command: .status, output: failedOutput()),
+    ])
+    await model.menuOpened()
+    let refresh = Task { await model.refreshUsage() }
+    await gate.waitForEntry()
+    #expect(model.refreshResults["a"] == false)
+    #expect(model.refreshingAlias == "personal")
+    await gate.resume()
+    await refresh.value
+    #expect(model.status?.accounts[0].usage?.rateLimits?.main.primary?.usedPercent == 38)
+    #expect(model.status?.accounts[1].usage?.rateLimits?.main.primary?.usedPercent == 20)
+    #expect(model.refreshResults == ["a": false, "b": true])
+    #expect(await executor.remaining == 0)
+  }
+
+  @Test func partialSuccessKeepsUpdatedUsageAndReloadsObservation() async throws {
+    let cached = freshStatusData()
+    var finalRoot = try #require(
+      JSONSerialization.jsonObject(with: freshStatusData(active: "b")) as? [String: Any])
+    var finalAccounts = try #require(finalRoot["accounts"] as? [[String: Any]])
+    var updated = try #require(
+      JSONSerialization.jsonObject(with: refreshedAccount()) as? [String: Any])
+    updated["active"] = false
+    finalAccounts[0] = updated
+    finalRoot["accounts"] = finalAccounts
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(cached)),
+      .init(command: .refreshUsage("work"), output: success(try refreshedAccount())),
+      .init(command: .refreshUsage("personal"), output: failedOutput()),
+      .init(
+        command: .status, output: success(try JSONSerialization.data(withJSONObject: finalRoot))),
+    ])
+    await model.menuOpened()
+    await model.refreshUsage()
+    #expect(model.status?.activeAccountID == "b")
+    #expect(model.status?.accounts[0].usage?.rateLimits?.main.primary?.usedPercent == 20)
+    #expect(model.errorMessage == UIError.refreshFailed.errorDescription)
+    #expect(await executor.remaining == 0)
+  }
+
+  @Test func ambiguousAliasIsSkippedWithoutBlockingOtherAccounts() async throws {
+    var root = try #require(JSONSerialization.jsonObject(with: freshStatusData()) as? [String: Any])
+    var accounts = try #require(root["accounts"] as? [[String: Any]])
+    accounts[0]["alias"] = "b"
+    root["accounts"] = accounts
+    let cached = try JSONSerialization.data(withJSONObject: root)
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(cached)),
+      .init(
+        command: .refreshUsage("personal"), output: success(try refreshedAccount(alias: "personal"))
+      ),
+      .init(command: .status, output: failedOutput()),
+    ])
+    await model.menuOpened()
+    await model.refreshUsage()
+    #expect(model.refreshResults == ["a": false, "b": true])
+    #expect(await executor.commands == [.status, .refreshUsage("personal"), .status])
+    #expect(await executor.remaining == 0)
+  }
+
+  @Test(arguments: ["fresh", "stale", "missing", "invalid", "future", "empty"])
+  func menuRefreshesOnlyWhenCacheRequiresIt(state: String) async throws {
     let clock = Clock()
     var root = try #require(
-      JSONSerialization.jsonObject(
-        with: freshStatusData(fetchedAt: clock.date)) as? [String: Any])
+      JSONSerialization.jsonObject(with: freshStatusData(fetchedAt: clock.date)) as? [String: Any])
     var accounts = try #require(root["accounts"] as? [[String: Any]])
     if state == "empty" {
       accounts = []
-    } else {
+    } else if state != "fresh" {
       var usage = try #require(accounts[1]["usage"] as? [String: Any])
-      if state == "missing" {
-        accounts[1].removeValue(forKey: "usage")
-      } else {
-        usage["fetchedAt"] = state == "invalid" ? "invalid" : "2099-01-01T00:00:00Z"
-        accounts[1]["usage"] = usage
+      switch state {
+      case "missing": accounts[1].removeValue(forKey: "usage")
+      case "invalid": usage["fetchedAt"] = "invalid"
+      case "future": usage["fetchedAt"] = "2099-01-01T00:00:00Z"
+      default:
+        usage["fetchedAt"] = ISO8601DateFormatter().string(
+          from: clock.date.addingTimeInterval(-301))
       }
+      if state != "missing" { accounts[1]["usage"] = usage }
     }
     root["accounts"] = accounts
     let cached = try JSONSerialization.data(withJSONObject: root)
+    let needsRefresh = state != "fresh" && state != "empty"
     var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(cached))]
-    if state != "empty" {
+    if needsRefresh {
       steps += [
-        .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-        .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
+        .init(command: .refreshUsage("work"), output: success(try refreshedAccount())),
+        .init(
+          command: .refreshUsage("personal"),
+          output: success(try refreshedAccount(alias: "personal"))),
+        .init(command: .status, output: success(cached)),
       ]
     }
     let (model, executor, _, _) = makeModel(steps, now: { clock.date })
     await model.menuOpened()
-    #expect(await executor.commands.count == (state == "empty" ? 1 : 3))
+    #expect(await executor.commands.count == (needsRefresh ? 4 : 1))
     #expect(await executor.remaining == 0)
+    model.menuClosed()
+    clock.advance(86400)
+    for _ in 0..<10 { await Task.yield() }
+    #expect(await executor.commands.count == (needsRefresh ? 4 : 1))
   }
 
-  @Test func manualAndAutomaticRefreshShareCooldownMeasuredFromCompletion() async throws {
+  @Test func cooldownStartsAfterWholeBatchAndFailuresBackOff() async throws {
     let clock = Clock()
-    let stale = freshStatusData(fetchedAt: clock.date.addingTimeInterval(-600))
     let gate = ExecutionGate()
-    let (model, executor, _, _) = makeModel(
-      [
-        .init(command: .status, output: success(stale)),
-        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
-        .init(command: .status, output: success(stale)),
-        .init(command: .status, output: success(stale)),
-        .init(command: .status, output: success(stale)),
-        .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-        .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-      ], now: { clock.date })
-    let opening = Task { await model.menuOpened() }
+    let cached = freshStatusData(fetchedAt: clock.date)
+    var steps: [ScriptedExecutor.Step] = [.init(command: .status, output: success(cached))]
+    for index in 0..<5 {
+      let fails = index < 3
+      steps += [
+        .init(
+          command: .refreshUsage("work"),
+          output: fails ? failedOutput() : success(try refreshedAccount()),
+          gate: index == 0 ? gate : nil),
+        .init(
+          command: .refreshUsage("personal"),
+          output: success(try refreshedAccount(alias: "personal"))),
+        .init(command: .status, output: success(cached)),
+      ]
+    }
+    let (model, executor, _, _) = makeModel(steps, now: { clock.date })
+    await model.menuOpened()
+    let refresh = Task { await model.refreshUsage() }
     await gate.waitForEntry()
     clock.advance(120)
     await model.refreshUsage()
-    #expect(await executor.commands == [.status, .refreshUsage])
+    #expect(await executor.commands.count == 2)
     await gate.resume()
-    await opening.value
-    await model.refreshUsage()
-    clock.advance(59)
-    await model.menuOpened()
-    await model.refreshUsage()
-    #expect(await executor.commands == [.status, .refreshUsage, .status, .status])
-    #expect(model.refreshNotice?.hasPrefix("Refresh available after ") == true)
-    clock.advance(1)
-    await model.menuOpened()
-    #expect(
-      await executor.commands == [
-        .status, .refreshUsage, .status, .status, .status, .refreshUsage, .status,
-      ])
+    await refresh.value
+    for (index, delay) in [60.0, 120.0, 300.0, 60.0].enumerated() {
+      clock.advance(delay - 1)
+      await model.refreshUsage()
+      #expect(await executor.commands.count == 1 + (index + 1) * 3)
+      #expect(model.refreshNotice?.hasPrefix("Refresh available after ") == true)
+      clock.advance(1)
+      await model.refreshUsage()
+    }
+    #expect(model.errorMessage == nil)
     #expect(model.refreshNotice == nil)
     #expect(await executor.remaining == 0)
   }
 
-  @Test func failuresBackOffOneTwoFiveMinutesAndSuccessResetsTheSequence() async throws {
-    let clock = Clock()
-    var steps: [ScriptedExecutor.Step] = (0..<4).map { _ in
-      .init(command: .refreshUsage, output: failedOutput())
-    }
-    steps += [
-      .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-      .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-      .init(command: .refreshUsage, output: failedOutput()),
-      .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-      .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-    ]
-    let (model, executor, _, _) = makeModel(steps, now: { clock.date })
-    for (index, delay) in [60.0, 120.0, 300.0, 300.0].enumerated() {
-      await model.refreshUsage()
-      #expect(model.errorMessage != nil)
-      clock.advance(delay - 1)
-      await model.refreshUsage()
-      #expect(await executor.commands.count == index + 1)
-      clock.advance(1)
-    }
-    await model.refreshUsage()
-    #expect(model.errorMessage == nil)
-    clock.advance(60)
-    await model.refreshUsage()
-    clock.advance(59)
-    await model.refreshUsage()
-    #expect(await executor.commands.count == 7)
-    clock.advance(1)
-    await model.refreshUsage()
-    #expect(model.errorMessage == nil)
-    #expect(await executor.remaining == 0)
-  }
-
   @Test func closingMenuDuringStatusReadPreventsAutomaticRefresh() async {
-    let clock = Clock()
     let gate = ExecutionGate()
-    let (model, executor, _, _) = makeModel(
-      [
-        .init(command: .status, output: success(statusData()), gate: gate)
-      ], now: { clock.date })
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(statusData()), gate: gate)
+    ])
     let opening = Task { await model.menuOpened() }
     await gate.waitForEntry()
     model.menuClosed()
     await gate.resume()
     await opening.value
-    clock.advance(3600)
-    for _ in 0..<10 { await Task.yield() }
     #expect(await executor.commands == [.status])
     #expect(model.phase == .idle)
   }
 
+  @Test(arguments: [guiProcesses, terminalProcesses])
+  func automaticRefreshNeverSwitchesOrTerminatesProcesses(processes: String) async throws {
+    let clock = Clock()
+    let cached = freshStatusData(
+      processes: processes, fetchedAt: clock.date.addingTimeInterval(-600))
+    let (model, executor, applications, _) = makeModel(
+      [
+        .init(command: .status, output: success(cached)),
+        .init(command: .refreshUsage("work"), output: success(try refreshedAccount())),
+        .init(
+          command: .refreshUsage("personal"),
+          output: success(try refreshedAccount(alias: "personal"))),
+        .init(command: .status, output: success(cached)),
+      ], now: { clock.date })
+    await model.menuOpened()
+    #expect(applications.terminations.isEmpty)
+    #expect(model.pendingAlias == nil)
+    #expect(await executor.commands.allSatisfy { !$0.arguments.contains("--allow-running") })
+    #expect(await executor.remaining == 0)
+  }
   @Test func cancelledOpenDoesNotStartRefreshEvenIfItRunsAfterClose() async {
     let gate = ExecutionGate()
     let (model, executor, _, _) = makeModel([])
@@ -205,29 +269,6 @@ struct RefreshPolicyTests {
     await gate.resume()
     await opening.value
     #expect(await executor.commands.isEmpty)
-  }
-
-  @Test func closingMenuLetsStartedRefreshFinishWithoutSchedulingAnother() async throws {
-    let clock = Clock()
-    let gate = ExecutionGate()
-    let cached = freshStatusData(fetchedAt: clock.date.addingTimeInterval(-600))
-    let (model, executor, _, _) = makeModel(
-      [
-        .init(command: .status, output: success(cached)),
-        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
-        .init(command: .status, output: success(cached)),
-      ], now: { clock.date })
-    let opening = Task { await model.menuOpened() }
-    await gate.waitForEntry()
-    model.menuClosed()
-    opening.cancel()
-    await gate.resume()
-    await opening.value
-    clock.advance(3600)
-    for _ in 0..<10 { await Task.yield() }
-    #expect(await executor.commands == [.status, .refreshUsage, .status])
-    #expect(model.status == (try UIStatus.decode(cached)))
-    #expect(model.phase == .idle)
   }
 
   @Test func passingResetTimeNeverInventsFreshQuotaOrTriggersRefresh() async throws {
@@ -246,55 +287,4 @@ struct RefreshPolicyTests {
     #expect(await executor.commands == [.status])
   }
 
-  @Test(arguments: [guiProcesses, terminalProcesses])
-  func automaticRefreshNeverSwitchesOrTerminatesRunningProcesses(processes: String) async throws {
-    let clock = Clock()
-    let cached = freshStatusData(
-      processes: processes, fetchedAt: clock.date.addingTimeInterval(-600))
-    let (model, executor, applications, _) = makeModel(
-      [
-        .init(command: .status, output: success(cached)),
-        .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-        .init(command: .status, output: success(cached)),
-      ], now: { clock.date })
-    await model.menuOpened()
-    #expect(await executor.commands == [.status, .refreshUsage, .status])
-    #expect(applications.terminations.isEmpty)
-    #expect(model.pendingAlias == nil)
-  }
-
-  @Test(arguments: ["command", "account", "status"])
-  func failedAutomaticRefreshPreservesCacheAndThrottlesManualRetry(failure: String) async throws {
-    let clock = Clock()
-    let cached = freshStatusData(fetchedAt: clock.date.addingTimeInterval(-600))
-    var accounts = try #require(
-      JSONSerialization.jsonObject(with: refreshedAccounts()) as? [[String: Any]])
-    var usage = try #require(accounts[0]["usage"] as? [String: Any])
-    usage["error"] = "synthetic refresh failure"
-    accounts[0]["usage"] = usage
-    let response =
-      failure == "account"
-      ? success(try JSONSerialization.data(withJSONObject: accounts))
-      : success(try refreshedAccounts())
-    var steps: [ScriptedExecutor.Step] = [
-      .init(command: .status, output: success(cached)),
-      .init(command: .refreshUsage, output: failure == "command" ? failedOutput() : response),
-    ]
-    if failure == "status" { steps.append(.init(command: .status, output: failedOutput())) }
-    steps += [
-      .init(command: .refreshUsage, output: success(try refreshedAccounts())),
-      .init(command: .status, output: success(freshStatusData(fetchedAt: clock.date))),
-    ]
-    let (model, executor, _, _) = makeModel(steps, now: { clock.date })
-    await model.menuOpened()
-    #expect(model.status == (try UIStatus.decode(cached)))
-    #expect(model.errorMessage != nil)
-    clock.advance(59)
-    await model.refreshUsage()
-    #expect(await executor.remaining == 2)
-    clock.advance(1)
-    await model.refreshUsage()
-    #expect(model.errorMessage == nil)
-    #expect(await executor.remaining == 0)
-  }
 }

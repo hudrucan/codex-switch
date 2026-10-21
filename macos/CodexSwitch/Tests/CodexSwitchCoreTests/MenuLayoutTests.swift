@@ -45,7 +45,10 @@ struct MenuLayoutTests {
       ]
     } else {
       steps += [
-        .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
+        .init(command: .refreshUsage("work"), output: success(try refreshedAccount()), gate: gate),
+        .init(
+          command: .refreshUsage("personal"),
+          output: success(try refreshedAccount(alias: "personal"))),
         .init(command: .status, output: success(freshStatusData())),
       ]
     }

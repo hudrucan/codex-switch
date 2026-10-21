@@ -135,30 +135,30 @@ struct AppModelTests {
   @Test func manualRefreshThenStatus() async throws {
     let (model, executor, _, _) = makeModel([
       .init(command: .status, output: success(freshStatusData())),
-      .init(command: .refreshUsage, output: success(try refreshedAccounts())),
+      .init(command: .refreshUsage("work"), output: success(try refreshedAccount())),
+      .init(
+        command: .refreshUsage("personal"), output: success(try refreshedAccount(alias: "personal"))
+      ),
       .init(command: .status, output: success(freshStatusData())),
     ])
     await model.menuOpened()
     await model.refreshUsage()
     #expect(
       await executor.commands.map(\.arguments) == [
-        ["ui", "status", "--json"], ["account", "list", "--refresh", "--json"],
+        ["ui", "status", "--json"], ["account", "usage", "--json", "--", "work"],
+        ["account", "usage", "--json", "--", "personal"],
         ["ui", "status", "--json"],
       ])
     #expect(model.errorMessage == nil)
   }
 
-  @Test(arguments: [false, true])
-  func failedRefreshOrStatusRetainsLastGoodState(statusFails: Bool) async throws {
-    var steps: [ScriptedExecutor.Step] = [
-      .init(command: .status, output: success(freshStatusData()))
-    ]
-    steps.append(
-      .init(
-        command: .refreshUsage,
-        output: statusFails ? success(try refreshedAccounts()) : failedOutput()))
-    if statusFails { steps.append(.init(command: .status, output: failedOutput())) }
-    let (model, executor, _, _) = makeModel(steps)
+  @Test func failedRefreshRetainsLastGoodUsage() async throws {
+    let (model, executor, _, _) = makeModel([
+      .init(command: .status, output: success(freshStatusData())),
+      .init(command: .refreshUsage("work"), output: failedOutput()),
+      .init(command: .refreshUsage("personal"), output: failedOutput()),
+      .init(command: .status, output: failedOutput()),
+    ])
     await model.menuOpened()
     let lastGood = model.status
     await model.refreshUsage()
@@ -306,7 +306,11 @@ struct AppModelTests {
   @Test func concurrentActionsAreExcluded() async throws {
     let gate = ExecutionGate()
     let (model, executor, applications, _) = makeModel([
-      .init(command: .refreshUsage, output: success(try refreshedAccounts()), gate: gate),
+      .init(command: .status, output: success(freshStatusData())),
+      .init(command: .refreshUsage("work"), output: success(try refreshedAccount()), gate: gate),
+      .init(
+        command: .refreshUsage("personal"), output: success(try refreshedAccount(alias: "personal"))
+      ),
       .init(command: .status, output: success(freshStatusData())),
     ])
     let refreshing = Task { await model.refreshUsage() }
@@ -316,10 +320,13 @@ struct AppModelTests {
     await model.beginSwitch(accountID: "b")
     await model.menuOpened()
     await model.openCodex()
-    #expect(await executor.commands == [.refreshUsage])
+    #expect(await executor.commands == [.status, .refreshUsage("work")])
     await gate.resume()
     await refreshing.value
-    #expect(await executor.commands == [.refreshUsage, .status])
+    #expect(
+      await executor.commands == [
+        .status, .refreshUsage("work"), .refreshUsage("personal"), .status,
+      ])
     #expect(applications.terminations.isEmpty)
   }
 

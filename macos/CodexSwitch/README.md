@@ -80,14 +80,16 @@ or queued retries while the menu is open or closed, and passing a reset time
 never assumes quota has returned to 100%.
 
 Both this automatic refresh and **Refresh Usage** invoke
-`codex-switch account list --refresh --json`, followed by a status read. They share
+`codex-switch account usage --json -- <alias>` sequentially for each saved account,
+followed by a status read. Each account's quota appears as soon as its command
+finishes, while the remaining accounts continue. They share
 a 60-second cooldown from completion. Consecutive failures delay another attempt
 by one, two, then five minutes, capped at five; success resets the sequence.
 Reopen the menu or click Refresh Usage after the delay to try again. These limits
 last for the app process and do not throttle independent CLI commands.
 An already-started refresh finishes safely even if the menu closes. A
-command failure, per-account refresh error, or subsequent status error preserves
-the previous successful menu data. Operations and confirmation flows exclude
+per-account failure retains that account's cache and does not block later accounts.
+A subsequent status error also preserves completed updates. Operations and confirmation flows exclude
 concurrent refreshes and switches. The menu stays locked through the final cached
 status read after switching. Refresh progress replaces the icon and label in the
 Refresh Usage row; other operations show a small spinner and status in the
@@ -116,11 +118,12 @@ process indicator. It never switches accounts or automatically reopens Codex
 after Quit & Switch. No AppleScript, Automation entitlement, shell, or arbitrary
 PID kill is used for application termination.
 
-Refresh feedback shows the requested account count and elapsed time, then
-changes to loading updated status when the CLI refresh finishes. This is elapsed
-time, not per-account progress. A fixed-height hint keeps cached quota visible
-and explains that closing the menu lets the current refresh finish. The elapsed
-display does not poll the CLI or start additional refreshes.
+Refresh feedback shows completed/total accounts, the current account, and elapsed
+time, then changes to loading updated status after all accounts finish. Each
+account shows waiting, refreshing, updated, or failed while the batch runs.
+Cached quota and fetch timestamps stay visible until a validated result arrives.
+A fixed-height hint explains that closing the menu lets the batch finish. The
+elapsed display does not poll the CLI or start additional refreshes.
 
 Real GUI launch, menu lifecycle, and native quit/force-quit behavior require
 manual acceptance with a reviewed bundle; unit tests verify the state machine

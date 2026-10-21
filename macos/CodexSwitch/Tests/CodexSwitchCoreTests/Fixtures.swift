@@ -53,9 +53,20 @@ func failedOutput() -> CommandOutput {
     stdout: Data("invalid JSON".utf8), stderr: Data(syntheticCanary.utf8), exitStatus: 1)
 }
 
-func refreshedAccounts() throws -> Data {
-  let root = try #require(JSONSerialization.jsonObject(with: statusData()) as? [String: Any])
-  return try JSONSerialization.data(withJSONObject: #require(root["accounts"]))
+func refreshedAccount(alias: String = "work", usedPercent: Int = 20) throws -> Data {
+  let root = try #require(JSONSerialization.jsonObject(with: freshStatusData()) as? [String: Any])
+  let accounts = try #require(root["accounts"] as? [[String: Any]])
+  var account = try #require(accounts.first { $0["alias"] as? String == alias })
+  var usage = try #require(account["usage"] as? [String: Any])
+  var limits = try #require(usage["rateLimits"] as? [String: Any])
+  var main = try #require(limits["rateLimits"] as? [String: Any])
+  var primary = try #require(main["primary"] as? [String: Any])
+  primary["usedPercent"] = usedPercent
+  main["primary"] = primary
+  limits["rateLimits"] = main
+  usage["rateLimits"] = limits
+  account["usage"] = usage
+  return try JSONSerialization.data(withJSONObject: account)
 }
 
 let switchOutput = success(Data(#"{"changed":true,"profileId":"b","alias":"personal"}"#.utf8))
@@ -107,7 +118,11 @@ actor ScriptedExecutor: ProcessExecuting {
 
   func execute(_ command: CLICommand) async throws -> CommandOutput {
     commands.append(command)
-    await trace.append(command == .status ? "status" : command == .refreshUsage ? "refresh" : "use")
+    switch command {
+    case .status: await trace.append("status")
+    case .refreshUsage: await trace.append("refresh")
+    case .use: await trace.append("use")
+    }
     guard !steps.isEmpty else {
       Issue.record("Unexpected extra CLI invocation")
       throw UIError.commandFailed

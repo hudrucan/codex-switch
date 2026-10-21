@@ -76,17 +76,37 @@ struct ClientTests {
     #expect(!UIError.commandFailed.localizedDescription.contains(syntheticCanary))
   }
 
-  @Test func perAccountRefreshFailureIsNotSuccess() async throws {
-    let accounts = Data(
-      #"[{"id":"a","alias":"work","accountId":"a","active":true,"source":"synthetic","usage":{"status":"stale","error":"SYNTHETIC_RAW_DIAGNOSTIC_CANARY"}}]"#
-        .utf8)
-    let trace = ActionTrace()
-    let executor = ScriptedExecutor(
-      [.init(command: .refreshUsage, output: success(accounts))], trace: trace)
-    await #expect(throws: UIError.refreshFailed) {
-      try await CLIClient(executor: executor).refreshUsage()
+  @Test(arguments: ["error", "id", "account", "workspace", "missing", "stale", "invalid-date"])
+  func invalidRefreshResultsAreRejected(fault: String) async throws {
+    let target = try #require(UIStatus.decode(freshStatusData()).accounts.first)
+    var account = try #require(
+      JSONSerialization.jsonObject(with: refreshedAccount()) as? [String: Any])
+    var usage = try #require(account["usage"] as? [String: Any])
+    switch fault {
+    case "id": account["id"] = "other-profile"
+    case "account": account["accountId"] = "other-account"
+    case "workspace": account["workspaceId"] = "other-workspace"
+    case "missing": account.removeValue(forKey: "usage")
+    case "stale": usage["status"] = "stale"
+    case "invalid-date": usage["fetchedAt"] = "invalid"
+    default: usage["error"] = syntheticCanary
     }
-    #expect(!UIError.refreshFailed.localizedDescription.contains(syntheticCanary))
+    if fault != "missing" { account["usage"] = usage }
+    let executor = ScriptedExecutor(
+      [
+        .init(
+          command: .refreshUsage("work"),
+          output: success(try JSONSerialization.data(withJSONObject: account)))
+      ], trace: ActionTrace())
+    do {
+      _ = try await CLIClient(executor: executor).refreshUsage(account: target)
+      Issue.record("Invalid refresh result was accepted")
+    } catch {
+      #expect(error is UIError)
+      #expect(!error.localizedDescription.contains(syntheticCanary))
+    }
+    #expect(
+      await executor.commands.map(\.arguments) == [["account", "usage", "--json", "--", "work"]])
   }
 
   @Test func explicitResolverNeverFallsBackToPath() throws {

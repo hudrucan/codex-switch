@@ -15,6 +15,10 @@ public final class AppModel: ObservableObject {
   @Published public private(set) var refreshNotice: String?
   @Published public private(set) var refreshStartedAt: Date?
   @Published public private(set) var isReloadingUsage = false
+  @Published public private(set) var refreshingAlias: String?
+  @Published public private(set) var refreshCompleted = 0
+  @Published public private(set) var refreshTotal = 0
+  @Published public private(set) var refreshResults: [String: Bool] = [:]
 
   private let client: any CLIClientProtocol
   private let applications: any ApplicationControlling
@@ -94,19 +98,51 @@ public final class AppModel: ObservableObject {
       return
     }
     refreshNotice = nil
+    errorMessage = nil
     nextRefreshAt = now().addingTimeInterval(60)
+    refreshCompleted = 0
+    refreshTotal = 0
+    refreshResults = [:]
     refreshStartedAt = now()
     phase = .refreshing
     defer {
       refreshStartedAt = nil
       isReloadingUsage = false
+      refreshingAlias = nil
       phase = .idle
     }
     do {
-      try await client.refreshUsage()
+      if status == nil { status = try await client.status() }
+      let accounts = status?.accounts ?? []
+      refreshTotal = accounts.count
+      var hadFailure = false
+      // Each CLI call finishes credential recovery and persistence before returning.
+      // Keep the menu operation busy across all calls and the final observation.
+      for account in accounts {
+        refreshingAlias = account.alias
+        do {
+          guard
+            !accounts.contains(where: {
+              $0.id != account.id
+                && ($0.id == account.alias
+                  || $0.alias.caseInsensitiveCompare(account.alias) == .orderedSame)
+            })
+          else { throw UIError.ambiguousAlias }
+          let updated = try await client.refreshUsage(account: account)
+          status = status?.replacingUsage(for: updated)
+          refreshResults[account.id] = true
+        } catch {
+          hadFailure = true
+          refreshResults[account.id] = false
+        }
+        refreshCompleted += 1
+      }
+      refreshingAlias = nil
       isReloadingUsage = true
       let updated = try await client.status()
+      // Keep successful per-account results if another account or final read fails.
       status = updated
+      if hadFailure { throw UIError.refreshFailed }
       errorMessage = nil
       refreshFailures = 0
       nextRefreshAt = now().addingTimeInterval(60)
@@ -114,7 +150,8 @@ public final class AppModel: ObservableObject {
       refreshFailures = min(refreshFailures + 1, 3)
       let delay: TimeInterval = refreshFailures == 1 ? 60 : (refreshFailures == 2 ? 120 : 300)
       nextRefreshAt = now().addingTimeInterval(delay)
-      show(error, fallback: "Usage refresh failed. Previous menu data is retained.")
+      show(
+        error, fallback: "Usage refresh failed. Completed updates and cached usage are retained.")
       let minutes = Int(delay / 60)
       refreshNotice = "Try refreshing again in \(minutes) \(minutes == 1 ? "minute" : "minutes")."
     }

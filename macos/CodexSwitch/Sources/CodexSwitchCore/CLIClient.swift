@@ -25,7 +25,7 @@ public enum UIError: Error, LocalizedError, Equatable, Sendable {
       return
         "This alias conflicts with another profile ID. Rename it with the CLI before switching."
     case .refreshFailed:
-      return "Usage refresh failed for one or more accounts. The previous menu data is retained."
+      return "Usage refresh failed for one or more accounts. Successful updates are retained."
     case .openFailed:
       return "Codex could not be opened. Check that a supported application is installed."
     }
@@ -33,13 +33,14 @@ public enum UIError: Error, LocalizedError, Equatable, Sendable {
 }
 
 public enum CLICommand: Equatable, Sendable {
-  case status, refreshUsage
+  case status
+  case refreshUsage(String)
   case use(String)
 
   public var arguments: [String] {
     switch self {
     case .status: return ["ui", "status", "--json"]
-    case .refreshUsage: return ["account", "list", "--refresh", "--json"]
+    case .refreshUsage(let alias): return ["account", "usage", "--json", "--", alias]
     case .use(let alias): return ["use", alias, "--json"]
     }
   }
@@ -63,7 +64,7 @@ public protocol ProcessExecuting: Sendable {
 
 public protocol CLIClientProtocol: Sendable {
   func status() async throws -> UIStatus
-  func refreshUsage() async throws
+  func refreshUsage(account: Account) async throws -> Account
   func use(alias: String) async throws
 }
 
@@ -89,16 +90,20 @@ public struct CLIClient: CLIClientProtocol {
     try UIStatus.decode(await run(.status))
   }
 
-  public func refreshUsage() async throws {
-    let data = try await run(.refreshUsage)
-    let accounts: [Account]
-    do { accounts = try JSONDecoder().decode([Account].self, from: data) } catch {
+  public func refreshUsage(account: Account) async throws -> Account {
+    try Self.validateAlias(account.alias)
+    let data = try await run(.refreshUsage(account.alias))
+    let updated: Account
+    do { updated = try JSONDecoder().decode(Account.self, from: data) } catch {
       throw UIError.invalidResponse
     }
-    // The CLI may exit successfully while reporting per-account failures.
-    guard !accounts.contains(where: { $0.usage?.error?.isEmpty == false }) else {
-      throw UIError.refreshFailed
-    }
+    guard updated.id == account.id, updated.accountId == account.accountId,
+      account.workspaceId == nil || updated.workspaceId == account.workspaceId
+    else { throw UIError.invalidResponse }
+    guard let usage = updated.usage, usage.status == "fresh", usage.fetchedDate != nil,
+      usage.error?.isEmpty != false
+    else { throw UIError.refreshFailed }
+    return updated
   }
 
   static func validateAlias(_ alias: String) throws {

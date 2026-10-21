@@ -66,7 +66,8 @@ a code signature.
 `macos/CodexSwitch` contains Codex Switch, a SwiftUI `MenuBarExtra` agent app.
 Opening its menu reads cached status first. If any account has no valid cache
 timestamp, a future timestamp, or a snapshot older than five minutes, that open
-event can invoke `codex-switch account list --refresh --json` and reload status.
+event can refresh saved accounts sequentially through
+`codex-switch account usage --json -- <alias>` and reload status.
 An empty account list never triggers refresh. Closing the menu before the status
 read finishes prevents automatic refresh; an already-started refresh finishes
 normally so CLI credential recovery and process cleanup remain intact.
@@ -74,17 +75,27 @@ normally so CLI credential recovery and process cleanup remain intact.
 Automatic and explicit Refresh Usage share the app's operation exclusion and a
 60-second cooldown from completion. Consecutive refresh or status-reload failures
 delay the next attempt by one, two, then five minutes (capped); a successful
-refresh and reload resets that sequence. The UI retains its previous successful
-data on failure. Deadlines are checked on user actions/menu opens, without refresh timers,
+refresh and reload resets that sequence. Failed accounts retain their cached
+usage; completed updates remain visible even if another account or the final
+status read fails. Deadlines are checked on user actions/menu opens, without refresh timers,
 queued retries, or background polling. These limits are in memory per app process
 and reset on relaunch; independent CLI invocations retain existing behavior and
 cross-process locks. Passing a cached reset time never fabricates fresh quota.
 
-Refresh feedback displays elapsed time and the requested account count while
-retaining cached quota, then identifies the final status reload separately.
-The elapsed display only updates presentation; it makes no CLI requests and
-does not infer per-account completion. Closing the menu leaves the existing
-operation's cleanup and recovery intact.
+Each per-account command completes the CLI's existing credential reconciliation
+and cache persistence before returning public JSON. The UI checks the returned
+profile ID, account ID, and known workspace before replacing only that account's
+usage. Alias/ID collisions in the selection snapshot are rejected. A failure
+marks the account and does not prevent later accounts from refreshing. The final
+status read updates account selection and process observation; intermediate
+usage results never establish active-account identity.
+
+Refresh feedback shows elapsed time, completed/total accounts, the current alias,
+and per-account waiting, refreshing, updated, or failed labels. The elapsed
+display makes no CLI requests. The menu excludes other operations across the
+whole batch; CLI cross-process locks apply separately to each account command.
+Independent CLI operations can interleave between accounts. Closing the menu
+leaves the started batch running so each command can finish recovery and cleanup.
 
 On Unix, process discovery uses the `ps` short executable-name column (`ucomm`)
 so macOS path-column truncation cannot turn `ChatGPT` into `Ch`. The public

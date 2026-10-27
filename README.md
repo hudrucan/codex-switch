@@ -178,6 +178,7 @@ switch.
 - [Compatibility](docs/compatibility.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [macOS menu-bar app](macos/CodexSwitch/README.md)
+- [Windows tray app](windows/README.md)
 
 The design was informed by the MIT-licensed
 [CC Switch](https://github.com/farion1231/cc-switch), especially its handling of

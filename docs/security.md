@@ -224,6 +224,36 @@ actors. These are required repository-side operational controls, not settings
 enforced by this CLI. Direct Actions are pinned to commits, tool versions are
 explicit, and Dependabot monitors Go and Actions weekly.
 
+## Windows tray UI
+
+The optional Windows UI consumes public CLI JSON without directly reading auth,
+vaults, state/cache files, or operating-system credential stores. It uses
+`Helpers/codex-switch.exe` beside the app, or an absolute local
+`CODEX_SWITCH_CLI_PATH` override without fallback. Discovery rejects UNC and
+reparse paths and checks executable/ancestor ownership and replacement ACLs.
+The current user, SYSTEM, Administrators, and TrustedInstaller are trusted.
+Creating siblings under an ancestor does not grant replacement rights over its
+protected children. Deny rules do not relax allow-rule rejection, so restrictive
+custom ACLs may be rejected. These checks do not authenticate a publisher or
+eliminate same-user races.
+
+Commands use separate arguments without a shell. Public stdout is capped at four
+million characters; stderr is drained and discarded. Only read-only status has a
+five-second UI timeout. Switch and refresh commands finish under the CLI's locks,
+credential reconciliation, and recovery controls; hiding the popup does not
+cancel them, and Quit is disabled while busy. The UI verifies profile, alias,
+account/workspace identity, freshness, and error-free usage before accepting a
+refresh result. A failed final observation disables switching until status can
+be read again. It never schedules refreshes, terminates Codex, or passes
+`--allow-running`, and adds no credential/storage format.
+
+Synthetic preview/demo modes never construct the real CLI client. Regression
+checks use temporary homes, fake clients, and a synthetic subprocess without
+opening credential stores. They do not establish live OAuth compatibility or
+native tray behavior. Distribution still requires manual checks of Explorer
+restart, keyboard navigation, high contrast, mixed-DPI monitors, taskbar positions,
+and the installed executable's ACLs.
+
 ## Residual risks and limitations
 
 - Credential-store acknowledged writes and filesystem sync/replacement primitives

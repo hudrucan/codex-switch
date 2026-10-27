@@ -116,6 +116,11 @@ needed, select it explicitly with `--codex-binary <path>` or the `CODEX_BINARY`
 environment variable. `codex-switch doctor` reports this case separately from a
 completely missing CLI.
 
+`Codex app server: unavailable (diagnostics redacted)` means executable discovery
+failed before App Server started. Check PATH and any `CODEX_BINARY` override
+first; this message alone does not indicate a remote service outage. Restart
+terminals and the Windows tray app after changing PATH.
+
 Usage queries require network access and a saved ChatGPT login. They do not work
 for API-key-only or Amazon Bedrock authentication. A missing method on an older
 Codex build is reported as partial when the other method still works; update

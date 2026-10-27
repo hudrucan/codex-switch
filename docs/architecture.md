@@ -126,6 +126,24 @@ receives a termination request after 5 seconds; mutating CLI commands finish
 under their own lifecycle controls. See the [native app guide](../macos/CodexSwitch/README.md)
 for building and menu behavior.
 
+## Windows tray companion
+
+`windows/` contains a separate C#/WPF tray app. It uses the same version-1
+`ui status --json` contract as macOS and the unchanged guarded `use` command.
+The Go credential-management core has no dependency on either UI.
+
+Menu opening reads cached status. Explicit Refresh Usage queries each saved alias
+sequentially through `account usage --json -- <alias>`, then reads status again.
+The controller keeps the UI busy across all calls and the final observation.
+Completed usage updates survive another account's failure or a failed final read.
+Switching revalidates the selected profile, account/workspace identity, and
+processes before invoking the guarded CLI command. Running Codex requires manual
+closure and an explicit retry.
+
+See [security](security.md#windows-tray-ui) for executable selection, response
+validation, and subprocess lifecycle rules, and the
+[Windows guide](../windows/README.md) for building and menu behavior.
+
 ## Locking and mutation model
 
 All vault writers acquire `<vault path>.lock`. Operations using live

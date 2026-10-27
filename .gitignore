@@ -4,6 +4,8 @@
 /codex-switch
 /codex-switch.exe
 /.build
+/windows/**/bin/
+/windows/**/obj/
 
 # Local and editor state
 .DS_Store

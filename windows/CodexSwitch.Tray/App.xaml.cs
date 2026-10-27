@@ -25,14 +25,16 @@ public partial class App : Application
         if (e.Args.Length != 0 && !preview && !demo) { Shutdown(2); return; }
         var scenario = preview && e.Args.Length >= 3 ? e.Args[2] : "active";
         var theme = preview && e.Args.Length == 4 ? e.Args[3] : null;
-        if (scenario is not ("active" or "unmanaged" or "many") || theme is not (null or "light" or "dark")) { Shutdown(2); return; }
+        if (scenario is not ("active" or "unmanaged" or "many" or "closing") || theme is not (null or "light" or "dark")) { Shutdown(2); return; }
         Palette.Apply(theme is null ? null : theme == "dark");
         if (preview || demo)
         {
-            popup = new MainWindow(new SwitchController(new DemoClient(scenario)), isDemo: true);
+            var client = new DemoClient(scenario);
+            popup = new MainWindow(new SwitchController(client, applications: client), isDemo: true);
             if (preview)
             {
                 await popup.LoadStatus();
+                if (scenario == "closing") await popup.SelectAccount((await client.Status()).Accounts[1]);
                 var content = (FrameworkElement)popup.Content;
                 content.Measure(new Size(400, double.PositiveInfinity));
                 content.Arrange(new Rect(0, 0, 400, content.DesiredSize.Height));
@@ -54,7 +56,7 @@ public partial class App : Application
             if (!created) { Shutdown(); return; }
             var process = new CliProcess(() => CliResolver.Resolve(AppContext.BaseDirectory,
                 Environment.GetEnvironmentVariable("CODEX_SWITCH_CLI_PATH")));
-            popup = new MainWindow(new SwitchController(new CliClient(process)), isDemo: false);
+            popup = new MainWindow(new SwitchController(new CliClient(process), applications: new WindowsApplications()), isDemo: false);
         }
         icon = TrayIcon.Create();
         var menu = new Forms.ContextMenuStrip();

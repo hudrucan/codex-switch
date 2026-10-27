@@ -2,6 +2,7 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
@@ -36,6 +37,7 @@ public partial class MainWindow : Window
     }
 
     public Task LoadStatus() => Run(controller.Reload);
+    public Task SelectAccount(Account account) => Run(() => controller.Switch(account));
     public void CloseForExit() { exiting = true; Close(); }
 
     private void OnClosing(object? sender, CancelEventArgs args)
@@ -90,15 +92,23 @@ public partial class MainWindow : Window
         SavedSection.Visibility = Visibility.Visible;
         SavedTitle.Text = "SAVED ACCOUNTS";
         Subtitle.Text = isDemo ? "Synthetic preview" : status is null ? "" : $"{status.Accounts.Length} accounts";
-        Actions.IsEnabled = !IsBusy;
-        Quit.IsEnabled = !IsBusy;
+        var confirming = controller.PendingAccount is not null;
+        Actions.IsEnabled = !IsBusy && !confirming;
+        Actions.Opacity = confirming ? 0.5 : 1;
+        Quit.IsEnabled = !IsBusy && !confirming;
         Refresh.Content = controller.IsRefreshing ? $"↻   Refreshing {controller.RefreshCompleted}/{controller.RefreshTotal}…" : "↻   Refresh Usage";
         RefreshFeedback.Text = controller.IsRefreshing
             ? controller.RefreshingAlias is null ? "Reloading account status…" : $"Refreshing {controller.RefreshingAlias} · completed {controller.RefreshCompleted}/{controller.RefreshTotal}"
             : controller.RefreshNotice ?? "Usage is cached. Refresh updates all saved accounts.";
-        Activity.Text = IsBusy ? "Working…" : !controller.StatusAvailable ? "Process status unavailable" :
+        Activity.Text = controller.IsClosing ? "Waiting for Codex to close…" : IsBusy ? "Working…" : !controller.StatusAvailable ? "Process status unavailable" :
             status!.CodexProcesses.Length == 0 ? "●  Codex is closed" : "●  Codex is running";
-        RetrySwitch.Visibility = controller.PendingAccount is null ? Visibility.Collapsed : Visibility.Visible;
+        SwitchConfirmation.Visibility = confirming ? Visibility.Visible : Visibility.Collapsed;
+        SwitchConfirmation.IsEnabled = !IsBusy;
+        ConfirmationTitle.Text = $"Switch to {controller.PendingAccount?.Alias}";
+        ProcessCount.Text = controller.StatusAvailable ? $"{status!.CodexProcesses.Length} running process{(status.CodexProcesses.Length == 1 ? "" : "es")}" : "Process status unavailable";
+        ConfirmationNotice.Text = controller.Message ?? "";
+        RetrySwitch.Visibility = confirming && !controller.CanCloseAndSwitch ? Visibility.Visible : Visibility.Collapsed;
+        CloseSwitch.Visibility = controller.CanCloseAndSwitch ? Visibility.Visible : Visibility.Collapsed;
         var active = controller.StatusAvailable ? status?.Accounts.FirstOrDefault(a => a.Id == status.ActiveId) : null;
         if (active is not null)
         {
@@ -123,17 +133,17 @@ public partial class MainWindow : Window
                     Padding = new Thickness(10),
                     Margin = new Thickness(0, 0, 0, 2),
                     HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                    IsEnabled = !IsBusy && controller.StatusAvailable && status.CanSwitch && Selectors.IsUnambiguous(account, status)
+                    IsEnabled = !IsBusy && !confirming && controller.StatusAvailable && status.CanSwitch && Selectors.IsUnambiguous(account, status)
                 };
                 AutomationProperties.SetName(button, $"Switch to {account.Alias}");
-                button.Click += async (_, _) => await Run(() => controller.Switch(account));
+                button.Click += async (_, _) => await SelectAccount(account);
                 SavedPanel.Children.Add(button);
             }
         }
         var notice = controller.Message ?? status?.Notice;
         if (notice is null && status?.CodexProcesses.Length > 0)
             notice = "Codex is running. Close it before switching accounts.";
-        ShowNotice(notice);
+        ShowNotice(confirming ? null : notice);
         Open.IsEnabled = !IsBusy && !isDemo;
     }
 
@@ -201,23 +211,34 @@ public partial class MainWindow : Window
     private static FrameworkElement AccountTitle(Account account, int size)
     {
         var title = new DockPanel { LastChildFill = true, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left };
+        var alias = Label(account.Alias);
+        alias.FontSize = size;
+        alias.FontWeight = FontWeights.Medium;
+        alias.VerticalAlignment = VerticalAlignment.Center;
+        alias.TextTrimming = TextTrimming.CharacterEllipsis;
+        alias.TextWrapping = TextWrapping.NoWrap;
+        alias.ToolTip = account.Alias;
         if (account.Usage is { IsAvailable: true, PlanType: { Length: > 0 } plan })
         {
             var planLabel = Label(plan, muted: true);
             planLabel.FontSize = size == 21 ? 11 : 10;
             planLabel.Margin = new Thickness(8, 0, 0, 0);
             planLabel.VerticalAlignment = VerticalAlignment.Center;
+            // Different font sizes have different ink centers even when their line boxes align.
+            planLabel.RenderTransform = new TranslateTransform(0, InkOffset(alias) - InkOffset(planLabel));
             DockPanel.SetDock(planLabel, Dock.Right);
             title.Children.Add(planLabel);
         }
-        var alias = Label(account.Alias);
-        alias.FontSize = size;
-        alias.FontWeight = FontWeights.Medium;
-        alias.TextTrimming = TextTrimming.CharacterEllipsis;
-        alias.TextWrapping = TextWrapping.NoWrap;
-        alias.ToolTip = account.Alias;
         title.Children.Add(alias);
         return title;
+    }
+
+    private static double InkOffset(TextBlock label)
+    {
+        var text = new FormattedText(label.Text, CultureInfo.CurrentUICulture, label.FlowDirection,
+            new Typeface(label.FontFamily, label.FontStyle, label.FontWeight, label.FontStretch), label.FontSize, Brushes.Black, 1);
+        var ink = text.BuildGeometry(new Point()).Bounds;
+        return ink.IsEmpty ? 0 : ink.Top + ink.Height / 2 - text.Height / 2;
     }
 
     private static string ResetCount(Account account)
@@ -293,6 +314,8 @@ public partial class MainWindow : Window
     }
 
     private async void RefreshClick(object sender, RoutedEventArgs e) => await Run(controller.RefreshUsage);
+    private async void CloseSwitchClick(object sender, RoutedEventArgs e) => await Run(controller.CloseAndSwitch);
+    private void CancelClick(object sender, RoutedEventArgs e) { controller.CancelSwitch(); Render(); if (IsVisible) PositionAtCursor(); }
     private void QuitClick(object sender, RoutedEventArgs e) => ((App)Application.Current).RequestExit();
     private async void RetrySwitchClick(object sender, RoutedEventArgs e)
     {

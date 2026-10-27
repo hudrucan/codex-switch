@@ -9,7 +9,7 @@ original purple application icon. Only the saved-account list scrolls when neede
 
 The UI never reads authentication, vaults, cache files, or credential stores.
 It runs its bundled CLI through public JSON, with the normal process guard.
-It does not poll, close applications, switch automatically,
+It does not poll or switch automatically,
 register a startup task, or install a service.
 
 ## Build and run
@@ -59,9 +59,12 @@ completed updates are retained. A 60-second cooldown applies after success;
 repeated failures increase the delay to 120 then 300 seconds. Hiding the popup
 does not cancel refresh. Other commands and Quit stay disabled until it finishes.
 
-Choose an account to switch. If Codex is running, close it yourself and select
-Retry Switch. After switching, select Open Codex to launch it. If the launcher
-cannot be found, open Codex or ChatGPT from Start.
+Choose an account to switch. When the running Store app can be identified safely,
+confirm Close & Switch to request a normal window close and wait for its processes
+to exit. Cancel leaves it open. A standalone CLI, unknown process, or app that
+stays running requires you to quit it yourself, then select Retry Switch. The UI
+never force-quits. After switching, select Open Codex to launch it. If the
+launcher cannot be found, open Codex or ChatGPT from Start.
 
 Unmanaged, ambiguous, conflicting, unsupported, or unreadable state blocks menu
 switching. Aliases beginning with `-`, or colliding with another profile's ID or
@@ -81,7 +84,7 @@ dotnet run --project windows/CodexSwitch.Tray -- --preview C:\path\to\preview.pn
 Both modes use in-memory accounts without reading live profiles. Preview mode
 renders a PNG and exits; demo mode opens the tray popup.
 
-Preview accepts an optional `active`, `unmanaged`, or `many` scenario followed
+Preview accepts an optional `active`, `unmanaged`, `many`, or `closing` scenario followed
 by `light` or `dark`, for example `--preview C:\path\to\unmanaged.png unmanaged
 light`.
 

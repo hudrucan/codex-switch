@@ -1,12 +1,16 @@
 namespace CodexSwitch.Core;
 
-public sealed class SwitchController(ICliClient client, Func<DateTimeOffset>? clock = null)
+public sealed class SwitchController(ICliClient client, Func<DateTimeOffset>? clock = null,
+    IApplicationControl? applications = null, Func<Task>? waitForClose = null)
 {
     public UiStatus? Status { get; private set; }
     public bool IsBusy { get; private set; }
     public bool StatusAvailable { get; private set; }
     public string? Message { get; private set; }
     public Account? PendingAccount { get; private set; }
+    public bool IsClosing { get; private set; }
+    public bool CanCloseAndSwitch => StatusAvailable && PendingAccount is not null && closeTargets.Length > 0;
+    private ApplicationTarget[] closeTargets = [];
     public bool IsRefreshing { get; private set; }
     public int RefreshCompleted { get; private set; }
     public int RefreshTotal { get; private set; }
@@ -93,45 +97,131 @@ public sealed class SwitchController(ICliClient client, Func<DateTimeOffset>? cl
         try
         {
             if (!await ReadStatus()) return;
-            var current = Status!.Accounts.SingleOrDefault(a => a.Id == selected.Id && a.Alias == selected.Alias &&
-                a.AccountId == selected.AccountId && a.WorkspaceId == selected.WorkspaceId);
-            if (current is null || !Selectors.IsUnambiguous(current, Status))
+            var current = SelectedAccount(selected);
+            if (current is null) return;
+            if (Status!.CodexProcesses.Length > 0)
             {
-                Message = "This account changed or has an ambiguous alias. Reload or rename it with the CLI.";
+                PreparePending(current);
                 return;
             }
-            if (!Status.CanSwitch)
-            {
-                Message = Status.Notice;
-                return;
-            }
-            if (Status.ActiveId == current.Id) { Message = "This account is already active."; return; }
-            if (Status.CodexProcesses.Length > 0)
-            {
-                PendingAccount = current;
-                Message = "Close Codex and any Codex terminals, then select Retry Switch. No applications will be closed for you.";
-                return;
-            }
-            try
-            {
-                await client.Use(current);
-                if (await ReadStatus())
-                    Message = Status!.ActiveId == current.Id
-                        ? "Account switched. Open Codex when you are ready."
-                        : "The selected account is not observed as active. Review account state with the CLI.";
-            }
-            catch
-            {
-                // The CLI remains authoritative if Codex starts between the snapshot and guarded use.
-                if (await ReadStatus() && Status!.CodexProcesses.Length > 0)
-                {
-                    PendingAccount = current;
-                    Message = "Codex is running. Close it and select Retry Switch.";
-                }
-                else Message = "The switch could not be verified. Reload status and review the CLI before retrying.";
-            }
+            await UseAndObserve(current);
         }
         finally { IsBusy = false; }
+    }
+
+    public void CancelSwitch()
+    {
+        if (IsBusy) return;
+        PendingAccount = null;
+        closeTargets = [];
+        Message = null;
+    }
+
+    public async Task CloseAndSwitch()
+    {
+        if (IsBusy || !CanCloseAndSwitch || PendingAccount is not { } selected) return;
+        var consented = closeTargets;
+        var observed = Status!.CodexProcesses.ToHashSet();
+        IsBusy = true;
+        IsClosing = true;
+        try
+        {
+            foreach (var target in consented)
+            {
+                // Confirmation is bound to process generations, never just remembered PIDs.
+                if (!await ReadStatus()) return;
+                if (SelectedAccount(selected) is null) { CancelPending(); return; }
+                var current = IdentifyTargets(Status!.CodexProcesses);
+                if (current is null || current.Any(t => !consented.Contains(t)))
+                {
+                    PreparePending(selected);
+                    Message = "Running applications changed. Review them before confirming Close & Switch again.";
+                    return;
+                }
+                observed.UnionWith(Status.CodexProcesses);
+                if (current.Contains(target) && !applications!.RequestClose(target))
+                {
+                    closeTargets = [];
+                    Message = "Windows could not request a normal close. Quit Codex manually, then select Retry Switch.";
+                    return;
+                }
+            }
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                if (!await ReadStatus()) return;
+                var current = SelectedAccount(selected);
+                if (current is null) { CancelPending(); return; }
+                if (Status!.CodexProcesses.Length == 0)
+                {
+                    CancelPending();
+                    await UseAndObserve(current);
+                    return;
+                }
+                var targets = IdentifyTargets(Status.CodexProcesses);
+                if (targets is not null ? targets.Any(t => !consented.Contains(t)) : Status.CodexProcesses.Any(p => !observed.Contains(p)))
+                {
+                    PreparePending(selected);
+                    Message = "Running applications changed. Review them before continuing.";
+                    return;
+                }
+                // Previously observed children may briefly outlive the GUI. Only wait; never signal them.
+                await (waitForClose?.Invoke() ?? Task.Delay(500));
+            }
+            closeTargets = [];
+            Message = "Codex is still running. If closing its window kept it in the tray, quit it there, then select Retry Switch.";
+        }
+        catch
+        {
+            closeTargets = [];
+            Message = "The close request could not be verified. Quit Codex manually and retry.";
+        }
+        finally { IsClosing = false; IsBusy = false; }
+    }
+
+    private void CancelPending() { PendingAccount = null; closeTargets = []; }
+
+    private Account? SelectedAccount(Account selected)
+    {
+        var current = Status!.Accounts.SingleOrDefault(a => a.Id == selected.Id && a.Alias == selected.Alias &&
+            a.AccountId == selected.AccountId && a.WorkspaceId == selected.WorkspaceId);
+        if (current is null || !Selectors.IsUnambiguous(current, Status))
+            Message = "This account changed or has an ambiguous alias. Reload or rename it with the CLI.";
+        else if (!Status.CanSwitch) Message = Status.Notice;
+        else if (Status.ActiveId == current.Id) Message = "This account is already active.";
+        else return current;
+        return null;
+    }
+
+    private ApplicationTarget[]? IdentifyTargets(CodexProcess[] processes)
+    {
+        var identified = processes.Select(p => applications?.Identify(p)).ToArray();
+        return identified.Any(t => t is null) ? null : identified.Cast<ApplicationTarget>().Distinct().ToArray();
+    }
+
+    private void PreparePending(Account current)
+    {
+        PendingAccount = current;
+        closeTargets = IdentifyTargets(Status!.CodexProcesses) ?? [];
+        Message = CanCloseAndSwitch
+            ? "Save your work. Close Codex before switching?"
+            : "Close Codex and any Codex terminals, then select Retry Switch. No applications will be closed for you.";
+    }
+
+    private async Task UseAndObserve(Account current)
+    {
+        try
+        {
+            await client.Use(current);
+            if (await ReadStatus())
+                Message = Status!.ActiveId == current.Id
+                    ? "Account switched. Open Codex when you are ready."
+                    : "The selected account is not observed as active. Review account state with the CLI.";
+        }
+        catch
+        {
+            if (await ReadStatus() && Status!.CodexProcesses.Length > 0) PreparePending(current);
+            else Message = "The switch could not be verified. Reload status and review the CLI before retrying.";
+        }
     }
 
     private async Task<bool> ReadStatus()

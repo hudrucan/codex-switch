@@ -14,6 +14,7 @@
         <RowDefinition Height="*" />
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
+        <RowDefinition Height="Auto" />
       </Grid.RowDefinitions>
       <DockPanel Grid.Row="0" Margin="18,16,18,14">
         <TextBlock x:Name="Subtitle" DockPanel.Dock="Right" FontSize="11" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right" VerticalAlignment="Center" />
@@ -31,14 +32,28 @@
           <StackPanel x:Name="SavedPanel" />
         </ScrollViewer>
       </Grid>
-      <StackPanel x:Name="Actions" Grid.Row="4" Margin="8,0,8,6">
+      <Border x:Name="SwitchConfirmation" Grid.Row="4" Margin="12,0,12,12" Padding="12"
+              Background="{DynamicResource Hover}" CornerRadius="8" Visibility="Collapsed">
+        <StackPanel>
+          <TextBlock x:Name="ConfirmationTitle" FontSize="12" FontWeight="SemiBold" Margin="0,0,0,8" />
+          <TextBlock x:Name="ProcessCount" FontSize="10" Foreground="{DynamicResource Muted}" Margin="0,0,0,8" />
+          <TextBlock x:Name="ConfirmationNotice" FontSize="11" Foreground="{DynamicResource Muted}" />
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button x:Name="Cancel" Content="Cancel Switch" Click="CancelClick" Style="{StaticResource ConfirmationButton}" Margin="0,0,8,0" />
+            <Button x:Name="CloseSwitch" Content="Close &amp; Switch" Click="CloseSwitchClick" Style="{StaticResource ConfirmationButton}"
+                    Background="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}" Foreground="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}" Visibility="Collapsed" />
+            <Button x:Name="RetrySwitch" Content="Retry Switch" Click="RetrySwitchClick" Style="{StaticResource ConfirmationButton}"
+                    Background="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}" Foreground="{DynamicResource {x:Static SystemColors.HighlightTextBrushKey}}" Visibility="Collapsed" />
+          </StackPanel>
+        </StackPanel>
+      </Border>
+      <StackPanel x:Name="Actions" Grid.Row="5" Margin="8,0,8,6">
         <Border Height="1" Background="{DynamicResource Line}" Margin="-8,0,-8,6" />
-        <Button x:Name="RetrySwitch" Content="Retry Switch" Click="RetrySwitchClick" Visibility="Collapsed" />
         <Button x:Name="Refresh" Content="↻   Refresh Usage" Click="RefreshClick" />
         <TextBlock x:Name="RefreshFeedback" Text="Usage is cached. Refresh updates all saved accounts." FontSize="10" Foreground="{DynamicResource Muted}" Margin="10,2,10,5" />
         <Button x:Name="Open" Content="↗   Open Codex" Click="OpenClick" />
       </StackPanel>
-      <Border Grid.Row="5" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="18,6,12,6">
+      <Border Grid.Row="6" BorderBrush="{DynamicResource Line}" BorderThickness="0,1,0,0" Padding="18,6,12,6">
         <DockPanel>
           <Button x:Name="Quit" DockPanel.Dock="Right" Content="Quit" Click="QuitClick" FontSize="11" Padding="6,4" Foreground="{DynamicResource Muted}" HorizontalAlignment="Right" />
           <TextBlock x:Name="Activity" Foreground="{DynamicResource Muted}" FontSize="11" VerticalAlignment="Center" />

@@ -229,6 +229,147 @@ await Test("a renamed or reassigned target cannot receive the switch", async () 
     await new SwitchController(fake).Switch(Fixtures.Status().Accounts[1]);
     Check(fake.Trace.SequenceEqual(["status"]));
 });
+await Test("Close & Switch needs confirmation and waits for verified exit", async () =>
+{
+    var fake = new FakeClient { Running = true };
+    var apps = new FakeApplications { OnClose = () => fake.Running = false };
+    var controller = new SwitchController(fake, applications: apps, waitForClose: () => Task.CompletedTask);
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    Check(controller.CanCloseAndSwitch && apps.Closed.Count == 0 && !fake.Trace.Any(t => t.StartsWith("use:")));
+    await controller.CloseAndSwitch();
+    Check(apps.Closed.SequenceEqual([900]) && fake.Trace.Count(t => t == "use:personal") == 1);
+    Check(controller.Status!.ActiveId == "b" && !controller.IsBusy && controller.PendingAccount is null);
+});
+await Test("cancel and unknown CLI ownership never request a close", async () =>
+{
+    var fake = new FakeClient { Running = true };
+    var apps = new FakeApplications();
+    var controller = new SwitchController(fake, applications: apps);
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    controller.CancelSwitch();
+    await controller.CloseAndSwitch();
+    Check(apps.Closed.Count == 0 && controller.PendingAccount is null);
+    apps.Targets.Clear();
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    await controller.CloseAndSwitch();
+    Check(!controller.CanCloseAndSwitch && apps.Closed.Count == 0 && controller.PendingAccount is not null);
+});
+await Test("close confirmation rejects reused process generations and changed accounts", async () =>
+{
+    foreach (var change in new[] { "generation", "account", "unknown", "status" })
+    {
+        var fake = new FakeClient { Running = true };
+        var apps = new FakeApplications();
+        var controller = new SwitchController(fake, applications: apps);
+        await controller.Switch(Fixtures.Status().Accounts[1]);
+        if (change == "generation") apps.Targets[1234] = apps.Targets[1234] with { StartedAt = 2 };
+        if (change == "account") fake.Renamed = true;
+        if (change == "unknown") apps.Targets.Clear();
+        if (change == "status") fake.FailStatus = true;
+        await controller.CloseAndSwitch();
+        Check(apps.Closed.Count == 0 && !fake.Trace.Any(t => t.StartsWith("use:")));
+    }
+});
+await Test("declined or slow closes retain manual retry without force switching", async () =>
+{
+    foreach (var mode in new[] { "decline", "slow", "failure" })
+    {
+        var fake = new FakeClient { Running = true };
+        var apps = new FakeApplications { AcceptClose = mode != "decline" };
+        if (mode == "failure") apps.OnClose = () => throw new Exception("SYNTHETIC_PRIVATE_DIAGNOSTIC");
+        var controller = new SwitchController(fake, applications: apps, waitForClose: () => Task.CompletedTask);
+        await controller.Switch(Fixtures.Status().Accounts[1]);
+        await controller.CloseAndSwitch();
+        Check(apps.Closed.Count == 1 && controller.PendingAccount is not null && !controller.CanCloseAndSwitch);
+        Check(!fake.Trace.Any(t => t.StartsWith("use:")) && !controller.IsBusy);
+        Check(!controller.Message!.Contains("SYNTHETIC_PRIVATE"));
+    }
+});
+await Test("failed observation or changed account after closing prevents switching", async () =>
+{
+    foreach (var mode in new[] { "account", "status" })
+    {
+        var fake = new FakeClient { Running = true };
+        var apps = new FakeApplications { OnClose = () => { fake.Running = false; fake.Renamed = mode == "account"; fake.FailStatus = mode == "status"; } };
+        var controller = new SwitchController(fake, applications: apps);
+        await controller.Switch(Fixtures.Status().Accounts[1]);
+        await controller.CloseAndSwitch();
+        Check(apps.Closed.Count == 1 && !fake.Trace.Any(t => t.StartsWith("use:")));
+    }
+});
+await Test("new processes while waiting require fresh confirmation", async () =>
+{
+    var fake = new FakeClient { Running = true };
+    var apps = new FakeApplications();
+    apps.OnClose = () => apps.Targets[1234] = apps.Targets[1234] with { StartedAt = 2 };
+    var controller = new SwitchController(fake, applications: apps, waitForClose: () => Task.CompletedTask);
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    await controller.CloseAndSwitch();
+    Check(apps.Closed.Count == 1 && controller.CanCloseAndSwitch && !fake.Trace.Any(t => t.StartsWith("use:")));
+});
+await Test("each GUI close revalidates the remaining consented applications", async () =>
+{
+    var fake = new FakeClient { Processes = [new() { Pid = 1234, Command = "Codex.exe" }, new() { Pid = 2345, Command = "Codex.exe" }] };
+    var apps = new FakeApplications();
+    apps.Targets[2345] = new(901, 1, @"C:\Synthetic\Codex.exe", (nint)11);
+    apps.OnClose = () =>
+    {
+        fake.Processes = [new() { Pid = 2345, Command = "Codex.exe" }];
+        apps.Targets[2345] = apps.Targets[2345] with { StartedAt = 2 };
+    };
+    var controller = new SwitchController(fake, applications: apps);
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    await controller.CloseAndSwitch();
+    Check(apps.Closed.SequenceEqual([900]) && !fake.Trace.Any(t => t.StartsWith("use:")));
+});
+await Test("Close & Switch stays busy and retains the final CLI process guard", async () =>
+{
+    var fake = new FakeClient { Running = true };
+    var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var apps = new FakeApplications();
+    var controller = new SwitchController(fake, applications: apps, waitForClose: () => gate.Task);
+    await controller.Switch(Fixtures.Status().Accounts[1]);
+    var close = controller.CloseAndSwitch();
+    Check(controller.IsBusy && controller.IsClosing);
+    await controller.RefreshUsage();
+    controller.CancelSwitch();
+    await controller.CloseAndSwitch();
+    Check(apps.Closed.Count == 1);
+    fake.Running = false;
+    fake.Race = true;
+    gate.SetResult();
+    await close;
+    Check(controller.PendingAccount is not null && fake.Trace.Count(t => t.StartsWith("use:")) == 1);
+    Check(!controller.IsBusy && !controller.Message!.Contains("SYNTHETIC_PRIVATE"));
+});
+await TestSync("Windows app ownership resolves only stable same-user Store ancestry", () =>
+{
+    var root = new DesktopProcess(900, 1, 100, @"C:\Apps\Codex\Codex.exe", ApplicationOwnership.SupportedPackage, (nint)10, true);
+    var child = new DesktopProcess(1234, 900, 101, @"C:\Apps\Codex\resources\codex.exe", "", 0, true);
+    var records = new Dictionary<int, DesktopProcess> { [900] = root, [1234] = child };
+    var reported = new CodexProcess { Pid = 1234, Command = "codex.exe" };
+    ApplicationTarget? Identify() => ApplicationOwnership.Identify(reported, pid => records.GetValueOrDefault(pid), @"C:\User\OpenAI\Codex\bin");
+    Check(Identify()?.Pid == 900);
+    records[1234] = child with { Executable = @"C:\User\OpenAI\Codex\bin\hash\codex.exe" };
+    Check(Identify()?.Pid == 900);
+    foreach (var changed in new[] { child with { IsCurrentUserSession = false }, child with { ParentPid = 1234 },
+        child with { StartedAt = 99 }, child with { Executable = @"C:\Apps\CodexOther\codex.exe" },
+        child with { Executable = @"C:\Standalone\codex.exe" }, child with { PackageFamily = "unknown" } })
+    {
+        records[1234] = changed;
+        Check(Identify() is null);
+    }
+    records[1234] = child;
+    records[900] = root with { PackageFamily = "unknown" };
+    Check(Identify() is null);
+    records[900] = root with { Window = 0 };
+    Check(Identify() is null);
+    records[900] = root with { IsCurrentUserSession = false };
+    Check(Identify() is null);
+    records[900] = root;
+    var reads = 0;
+    Check(ApplicationOwnership.Identify(reported, pid => ++reads > 2 ? records[pid] with { StartedAt = 999 } : records[pid], @"C:\User\OpenAI\Codex\bin") is null);
+});
 await Test("process-start race returns to manual retry without bypass", async () =>
 {
     var fake = new FakeClient { Race = true };
@@ -384,18 +525,35 @@ await Test("native WPF menu keeps short lists unscrolled and long lists accessib
                 if (trayPixels[pixel * 4 + 3] >= 224) solidPixels++;
             }
             Check(columns.Count >= 14 && solidPixels >= 35);
-            foreach (var scenario in new[] { "active", "unmanaged", "many" })
+            foreach (var scenario in new[] { "active", "unmanaged", "many", "closing" })
                 foreach (var dark in new[] { false, true })
                 {
                     CodexSwitch.Tray.Palette.Apply(dark);
-                    var controller = new SwitchController(new CodexSwitch.Tray.DemoClient(scenario));
+                    var demo = new CodexSwitch.Tray.DemoClient(scenario);
+                    var controller = new SwitchController(demo, applications: demo);
                     var window = new CodexSwitch.Tray.MainWindow(controller, isDemo: true);
                     window.LoadStatus().GetAwaiter().GetResult();
+                    if (scenario == "closing") window.SelectAccount(demo.Status().Result.Accounts[1]).GetAwaiter().GetResult();
                     Check(window.Icon is System.Windows.Media.Imaging.BitmapFrame { PixelWidth: 256 });
                     var content = (System.Windows.FrameworkElement)window.Content;
                     content.Measure(new System.Windows.Size(400, double.PositiveInfinity));
                     content.Arrange(new System.Windows.Rect(0, 0, 400, content.DesiredSize.Height));
                     content.UpdateLayout();
+                    var labels = Descendants(content).OfType<System.Windows.Controls.TextBlock>().ToArray();
+                    foreach (var pair in new[] { ("work", "pro"), ("personal", "plus") })
+                    {
+                        var alias = labels.Single(l => l.Text == pair.Item1);
+                        var plan = labels.Single(l => l.Text == pair.Item2);
+                        var title = (System.Windows.FrameworkElement)System.Windows.Media.VisualTreeHelper.GetParent(alias);
+                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(title.ActualWidth), (int)Math.Ceiling(title.ActualHeight), 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                        var visual = new System.Windows.Media.DrawingVisual();
+                        using (var drawing = visual.RenderOpen())
+                            drawing.DrawRectangle(new System.Windows.Media.VisualBrush(title), null, new System.Windows.Rect(0, 0, title.ActualWidth, title.ActualHeight));
+                        bitmap.Render(visual);
+                        var delta = Math.Abs(InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)alias.Foreground).Color) - InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)plan.Foreground).Color));
+                        Console.WriteLine($"INK CENTER {scenario} dark={dark} alias={pair.Item1} delta={delta:F1}px");
+                        Check(delta <= 1);
+                    }
                     var scroll = (System.Windows.Controls.ScrollViewer)window.FindName("SavedAccountsScroll");
                     Console.WriteLine($"LAYOUT {scenario} dark={dark} height={content.ActualHeight:F0} scrollbar={scroll.ComputedVerticalScrollBarVisibility} viewport={scroll.ViewportHeight:F0} extent={scroll.ExtentHeight:F0}");
                     if ((scroll.ComputedVerticalScrollBarVisibility == System.Windows.Visibility.Visible) != (scenario == "many"))
@@ -410,8 +568,25 @@ await Test("native WPF menu keeps short lists unscrolled and long lists accessib
                     }
                     var notice = (System.Windows.Controls.TextBlock)window.FindName("Notice");
                     if (scenario == "unmanaged") Check(notice.Text.Contains("import-current"));
+                    if (scenario == "closing")
+                    {
+                        var close = (System.Windows.Controls.Button)window.FindName("CloseSwitch");
+                        CheckConfirmationLayout(window, "CloseSwitch", "RetrySwitch");
+                        Check(close.Visibility == System.Windows.Visibility.Visible && controller.Status!.CodexProcesses.Length == 1);
+                        ((System.Windows.Controls.Button)window.FindName("Cancel")).RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+                        Check(controller.PendingAccount is null && controller.Status!.CodexProcesses.Length == 1);
+                        window.SelectAccount(demo.Status().Result.Accounts[1]).GetAwaiter().GetResult();
+                        close.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Button.ClickEvent));
+                        Check(controller.Status!.ActiveId == "demo-personal" && controller.Status.CodexProcesses.Length == 0);
+                    }
                     window.CloseForExit();
                 }
+            var manualController = new SwitchController(new FakeClient { Running = true });
+            var manualWindow = new CodexSwitch.Tray.MainWindow(manualController, isDemo: true);
+            manualWindow.LoadStatus().GetAwaiter().GetResult();
+            manualWindow.SelectAccount(Fixtures.Status().Accounts[1]).GetAwaiter().GetResult();
+            CheckConfirmationLayout(manualWindow, "RetrySwitch", "CloseSwitch");
+            manualWindow.CloseForExit();
             var refreshFake = new FakeClient();
             var refreshController = new SwitchController(refreshFake);
             var refreshWindow = new CodexSwitch.Tray.MainWindow(refreshController, isDemo: true);
@@ -456,6 +631,58 @@ void ExpectUiError(Action action)
 }
 CliClient SyntheticClient() => new(new CliProcess(() => Environment.ProcessPath!));
 
+void CheckConfirmationLayout(CodexSwitch.Tray.MainWindow window, string primaryName, string hiddenName)
+{
+    var cancel = (System.Windows.Controls.Button)window.FindName("Cancel");
+    var primary = (System.Windows.Controls.Button)window.FindName(primaryName);
+    var hidden = (System.Windows.Controls.Button)window.FindName(hiddenName);
+    Check(primary.Visibility == System.Windows.Visibility.Visible && hidden.Visibility == System.Windows.Visibility.Collapsed);
+    Check(!((System.Windows.Controls.StackPanel)window.FindName("Actions")).IsEnabled);
+    Check(!((System.Windows.Controls.Button)window.FindName("Quit")).IsEnabled);
+    var accounts = (System.Windows.Controls.StackPanel)window.FindName("SavedPanel");
+    Check(accounts.Children.OfType<System.Windows.Controls.Button>().All(b => !b.IsEnabled));
+    var content = (System.Windows.FrameworkElement)window.Content;
+    foreach (var width in new[] { 400, 280 })
+    {
+        content.Measure(new System.Windows.Size(width, double.PositiveInfinity));
+        content.Arrange(new System.Windows.Rect(0, 0, width, content.DesiredSize.Height));
+        content.UpdateLayout();
+        var left = cancel.TranslatePoint(new System.Windows.Point(), content);
+        var right = primary.TranslatePoint(new System.Windows.Point(), content);
+        Check(cancel.IsEnabled && primary.IsEnabled && cancel.ActualWidth > 0 && primary.ActualWidth > 0);
+        Check(Math.Abs(left.Y - right.Y) < 1 && right.X >= left.X + cancel.ActualWidth + 7);
+        Check(right.X + primary.ActualWidth <= width - 12);
+        Console.WriteLine($"CONFIRMATION {primaryName} width={width}: Cancel and one primary action share a row");
+    }
+}
+
+IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.DependencyObject root)
+{
+    for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+    {
+        var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+        yield return child;
+        foreach (var descendant in Descendants(child)) yield return descendant;
+    }
+}
+
+double InkCenter(System.Windows.Media.Imaging.BitmapSource bitmap, System.Windows.Media.Color color)
+{
+    var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
+    bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
+    var rows = new List<int>();
+    for (var i = 0; i < bitmap.PixelWidth * bitmap.PixelHeight; i++)
+    {
+        var alpha = pixels[i * 4 + 3];
+        if (alpha < 64) continue;
+        if (Math.Abs(pixels[i * 4] * 255d / alpha - color.B) < 4 &&
+            Math.Abs(pixels[i * 4 + 1] * 255d / alpha - color.G) < 4 &&
+            Math.Abs(pixels[i * 4 + 2] * 255d / alpha - color.R) < 4) rows.Add(i / bitmap.PixelWidth);
+    }
+    if (rows.Count == 0) throw new Exception("No rendered text pixels matched the expected foreground.");
+    return (rows.Min() + rows.Max()) / 2d;
+}
+
 internal static class Fixtures
 {
     public static string Json(string state = "in_sync", string active = "a", bool running = false) => $$"""
@@ -474,10 +701,21 @@ internal static class Fixtures
 
 internal sealed class SkippedTest(string reason) : Exception(reason) { }
 
+internal sealed class FakeApplications : IApplicationControl
+{
+    public Dictionary<int, ApplicationTarget> Targets { get; } = new() { [1234] = new(900, 1, @"C:\Synthetic\Codex.exe", (nint)10) };
+    public List<int> Closed { get; } = [];
+    public bool AcceptClose { get; init; } = true;
+    public Action? OnClose { get; set; }
+    public ApplicationTarget? Identify(CodexProcess process) => Targets.GetValueOrDefault(process.Pid);
+    public bool RequestClose(ApplicationTarget target) { Closed.Add(target.Pid); OnClose?.Invoke(); return AcceptClose; }
+}
+
 internal sealed class FakeClient : ICliClient
 {
     public List<string> Trace { get; } = [];
     public bool Running { get; set; }
+    public CodexProcess[]? Processes { get; set; }
     public bool Race { get; set; }
     public bool FailStatus { get; set; }
     public bool Renamed { get; set; }
@@ -498,6 +736,7 @@ internal sealed class FakeClient : ICliClient
         if (Gate is not null) await Gate.Task;
         if (FailStatus || FailFinalStatus && statusCalls > 1) throw new Exception("SYNTHETIC_PRIVATE_DIAGNOSTIC");
         var status = UiStatus.Decode(Fixtures.Json(state: AmbiguousState ? "ambiguous" : "in_sync", active: active, running: Running));
+        if (Processes is not null) status = status with { CodexProcesses = Processes };
         status = status with
         {
             Accounts = status.Accounts.Select(a => a with

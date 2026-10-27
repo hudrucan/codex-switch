@@ -244,8 +244,19 @@ credential reconciliation, and recovery controls; hiding the popup does not
 cancel them, and Quit is disabled while busy. The UI verifies profile, alias,
 account/workspace identity, freshness, and error-free usage before accepting a
 refresh result. A failed final observation disables switching until status can
-be read again. It never schedules refreshes, terminates Codex, or passes
-`--allow-running`, and adds no credential/storage format.
+be read again. It never schedules refreshes or passes `--allow-running`, and
+adds no credential/storage format.
+
+Close & Switch requires a separate explicit confirmation. Read-only process
+metadata maps CLI-reported PIDs to a GUI in the Store package
+`OpenAI.Codex_2p2nqsd0c76g0`, owned by the current user/session. Ancestry, package
+or bundled/known-sidecar paths, and process start times must agree on reread.
+Confirmation binds the GUI PID, start time, executable, and window; the complete
+account/process observation is checked before each close request. A new or reused
+GUI needs fresh confirmation. Windows receives only a normal window-close request,
+never a kill or force-quit. Known children may be waited for after their GUI exits,
+but are never signaled. Unknown processes or a close timeout require manual exit;
+the normal CLI process guard remains authoritative. No real app is closed in tests.
 
 Synthetic preview/demo modes never construct the real CLI client. Regression
 checks use temporary homes, fake clients, and a synthetic subprocess without

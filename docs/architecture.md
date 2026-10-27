@@ -137,8 +137,10 @@ sequentially through `account usage --json -- <alias>`, then reads status again.
 The controller keeps the UI busy across all calls and the final observation.
 Completed usage updates survive another account's failure or a failed final read.
 Switching revalidates the selected profile, account/workspace identity, and
-processes before invoking the guarded CLI command. Running Codex requires manual
-closure and an explicit retry.
+processes before invoking the guarded CLI command. An identified running Store
+app offers explicit Close & Switch confirmation; the controller revalidates each
+close target and waits for process exit before switching. Unidentified processes
+or an app that stays running require manual closure and retry.
 
 See [security](security.md#windows-tray-ui) for executable selection, response
 validation, and subprocess lifecycle rules, and the

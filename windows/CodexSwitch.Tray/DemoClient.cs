@@ -5,9 +5,10 @@ using CodexSwitch.Core;
 
 namespace CodexSwitch.Tray;
 
-internal sealed class DemoClient(string scenario = "active") : ICliClient
+internal sealed class DemoClient(string scenario = "active") : ICliClient, IApplicationControl
 {
     private string active = "demo-work";
+    private bool running = scenario == "closing";
 
     public Task<UiStatus> Status()
     {
@@ -17,7 +18,7 @@ internal sealed class DemoClient(string scenario = "active") : ICliClient
         {
             SchemaVersion = 1,
             Accounts = accounts,
-            CodexProcesses = [],
+            CodexProcesses = running ? [new CodexProcess { Pid = 1234, Command = "Codex.exe" }] : [],
             Observation = scenario == "unmanaged"
                 ? new Observation { State = "unmanaged", HasLive = true, Managed = false, AccountId = "unsaved-demo" }
                 : new Observation { State = "in_sync", HasLive = true, Managed = true, ProfileId = active, AccountId = active }
@@ -25,6 +26,9 @@ internal sealed class DemoClient(string scenario = "active") : ICliClient
     }
 
     public Task Use(Account account) { active = account.Id; return Task.CompletedTask; }
+
+    public ApplicationTarget? Identify(CodexProcess process) => running && process.Pid == 1234 ? new(1234, 1, @"C:\Synthetic\Codex.exe", (nint)1) : null;
+    public bool RequestClose(ApplicationTarget target) { if (target != Identify(new CodexProcess { Pid = 1234, Command = "Codex.exe" })) return false; running = false; return true; }
 
     public async Task<Account> RefreshUsage(Account account)
     {

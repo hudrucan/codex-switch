@@ -13,6 +13,7 @@ internal sealed class DemoClient(string scenario = "active") : ICliClient, IAppl
     public Task<UiStatus> Status()
     {
         var accounts = new[] { Account("demo-work", "work", 32, 59, "pro"), Account("demo-personal", "personal", 8, 22, "plus") };
+        if (scenario == "team") accounts = [Account("demo-work", "northstar", 32, 59, "team"), Account("demo-personal", "bluerail", 8, 22, "team"), Account("demo-studio", "bluestudio", 10, 25, "team")];
         if (scenario == "many") accounts = accounts.Concat(Enumerable.Range(1, 5).Select(i => Account($"extra-{i}", $"account-{i}", 10, 25, "team"))).ToArray();
         return Task.FromResult(new UiStatus
         {

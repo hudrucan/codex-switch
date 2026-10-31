@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using CodexSwitch.Core;
 using Microsoft.Win32;
 using Forms = System.Windows.Forms;
@@ -88,6 +89,7 @@ public partial class MainWindow : Window
     {
         CurrentPanel.Children.Clear();
         SavedPanel.Children.Clear();
+        SavedAccountsScroll.MinHeight = 0;
         var status = controller.Status;
         SavedSection.Visibility = Visibility.Visible;
         SavedTitle.Text = "SAVED ACCOUNTS";
@@ -125,12 +127,13 @@ public partial class MainWindow : Window
             var others = status.Accounts.Where(a => a.Id != active?.Id).ToArray();
             SavedTitle.Text = active is null ? "SAVED ACCOUNTS" : "SWITCH ACCOUNT";
             SavedSection.Visibility = others.Length == 0 ? Visibility.Collapsed : Visibility.Visible;
+            SavedAccountsScroll.MinHeight = others.Length > 0 ? 144 : 0;
             foreach (var account in others)
             {
                 var button = new Button
                 {
                     Content = SavedAccount(account),
-                    Padding = new Thickness(10),
+                    Padding = new Thickness(10, 6, 10, 14),
                     Margin = new Thickness(0, 0, 0, 2),
                     HorizontalContentAlignment = HorizontalAlignment.Stretch,
                     IsEnabled = !IsBusy && !confirming && controller.StatusAvailable && status.CanSwitch && Selectors.IsUnambiguous(account, status)
@@ -149,7 +152,7 @@ public partial class MainWindow : Window
 
     private FrameworkElement ActiveAccount(Account account)
     {
-        var content = new StackPanel { Margin = new Thickness(0, 0, 0, 16) };
+        var content = new StackPanel();
         var title = new DockPanel();
         var mark = Label("✓");
         mark.FontSize = 16;
@@ -187,7 +190,7 @@ public partial class MainWindow : Window
         initial.HorizontalAlignment = HorizontalAlignment.Center;
         initial.VerticalAlignment = VerticalAlignment.Center;
         initial.FontSize = 11;
-        var avatar = new Border { Width = 28, Height = 28, CornerRadius = new CornerRadius(7), Child = initial, Margin = new Thickness(0, 0, 10, 0) };
+        var avatar = new Border { Width = 24, Height = 24, CornerRadius = new CornerRadius(6), Child = initial, Margin = new Thickness(0, 0, 10, 0) };
         avatar.SetResourceReference(Border.BackgroundProperty, "Hover");
         heading.Children.Add(avatar);
         var chevron = Label("›", muted: true);
@@ -224,8 +227,17 @@ public partial class MainWindow : Window
             planLabel.FontSize = size == 21 ? 11 : 10;
             planLabel.Margin = new Thickness(8, 0, 0, 0);
             planLabel.VerticalAlignment = VerticalAlignment.Center;
-            // Different font sizes have different ink centers even when their line boxes align.
-            planLabel.RenderTransform = new TranslateTransform(0, InkOffset(alias) - InkOffset(planLabel));
+            var alignment = new TranslateTransform();
+            planLabel.RenderTransform = alignment;
+            void AlignPlan(object sender, SizeChangedEventArgs args)
+            {
+                var aliasCenter = alias.TranslatePoint(new Point(0, TextInkCenter(alias)), title).Y;
+                var planCenter = planLabel.TranslatePoint(new Point(0, TextInkCenter(planLabel)), title).Y;
+                alignment.Y += aliasCenter - planCenter;
+            }
+            alias.SizeChanged += AlignPlan;
+            planLabel.SizeChanged += AlignPlan;
+            title.SizeChanged += AlignPlan;
             DockPanel.SetDock(planLabel, Dock.Right);
             title.Children.Add(planLabel);
         }
@@ -233,12 +245,29 @@ public partial class MainWindow : Window
         return title;
     }
 
-    private static double InkOffset(TextBlock label)
+    private static double TextInkCenter(TextBlock label)
     {
+        var dpi = VisualTreeHelper.GetDpi(label).PixelsPerDip;
         var text = new FormattedText(label.Text, CultureInfo.CurrentUICulture, label.FlowDirection,
-            new Typeface(label.FontFamily, label.FontStyle, label.FontWeight, label.FontStretch), label.FontSize, Brushes.Black, 1);
-        var ink = text.BuildGeometry(new Point()).Bounds;
-        return ink.IsEmpty ? 0 : ink.Top + ink.Height / 2 - text.Height / 2;
+            new Typeface(label.FontFamily, label.FontStyle, label.FontWeight, label.FontStretch), label.FontSize, Brushes.Black,
+            dpi);
+        var visual = new DrawingVisual();
+        using (var drawing = visual.RenderOpen()) drawing.DrawText(text, new Point());
+        var width = Math.Max(1, (int)Math.Ceiling(Math.Min(400, Math.Min(label.ActualWidth, text.WidthIncludingTrailingWhitespace)) * dpi));
+        var height = Math.Max(1, (int)Math.Ceiling(text.Height * dpi));
+        var bitmap = new RenderTargetBitmap(width, height, 96 * dpi, 96 * dpi, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        var pixels = new byte[width * height * 4];
+        bitmap.CopyPixels(pixels, width * 4, 0);
+        // Align the visual weight of the glyphs, not their ascender/descender bounds.
+        double totalInk = 0, weightedY = 0;
+        for (var pixel = 0; pixel < width * height; pixel++)
+        {
+            var ink = pixels[pixel * 4 + 3];
+            totalInk += ink;
+            weightedY += ink * (pixel / width + 0.5);
+        }
+        return totalInk == 0 ? text.Height / 2 : weightedY / totalInk / dpi;
     }
 
     private static string ResetCount(Account account)

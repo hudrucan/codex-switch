@@ -5,7 +5,8 @@ to see accounts, cached quota, reset times, and cache timestamps. Select an
 account to switch without opening a terminal or changing directory.
 
 The layout follows the macOS companion, with a white outline tray icon and the
-original purple application icon. Only the saved-account list scrolls when needed.
+original purple application icon. The saved-account list has room for a complete
+account card and grows up to 360 device-independent pixels before scrolling.
 
 The UI never reads authentication, vaults, cache files, or credential stores.
 It runs its bundled CLI through public JSON, with the normal process guard.
@@ -84,7 +85,7 @@ dotnet run --project windows/CodexSwitch.Tray -- --preview C:\path\to\preview.pn
 Both modes use in-memory accounts without reading live profiles. Preview mode
 renders a PNG and exits; demo mode opens the tray popup.
 
-Preview accepts an optional `active`, `unmanaged`, `many`, or `closing` scenario followed
+Preview accepts an optional `active`, `unmanaged`, `many`, `closing`, or `team` scenario followed
 by `light` or `dark`, for example `--preview C:\path\to\unmanaged.png unmanaged
 light`.
 

@@ -525,14 +525,25 @@ await Test("native WPF menu keeps short lists unscrolled and long lists accessib
                 if (trayPixels[pixel * 4 + 3] >= 224) solidPixels++;
             }
             Check(columns.Count >= 14 && solidPixels >= 35);
-            foreach (var scenario in new[] { "active", "unmanaged", "many", "closing" })
+            foreach (var scenario in new[] { "active", "unmanaged", "many", "closing", "team" })
                 foreach (var dark in new[] { false, true })
                 {
                     CodexSwitch.Tray.Palette.Apply(dark);
                     var demo = new CodexSwitch.Tray.DemoClient(scenario);
+                    if (scenario == "many") demo.Use(demo.Status().Result.Accounts[2]).GetAwaiter().GetResult();
                     var controller = new SwitchController(demo, applications: demo);
                     var window = new CodexSwitch.Tray.MainWindow(controller, isDemo: true);
+                    if (scenario == "many") window.ShowAtCursor();
                     window.LoadStatus().GetAwaiter().GetResult();
+                    if (scenario == "many")
+                    {
+                        window.UpdateLayout();
+                        var shownScroll = (System.Windows.Controls.ScrollViewer)window.FindName("SavedAccountsScroll");
+                        var shownAccounts = (System.Windows.Controls.StackPanel)window.FindName("SavedPanel");
+                        Console.WriteLine($"LOADED LIST height={window.ActualHeight:F0} viewport={shownScroll.ViewportHeight:F0}");
+                        if (shownScroll.ViewportHeight < ((System.Windows.FrameworkElement)shownAccounts.Children[0]).ActualHeight)
+                            throw new Exception("Loading accounts after opening the popup leaves the list too short.");
+                    }
                     if (scenario == "closing") window.SelectAccount(demo.Status().Result.Accounts[1]).GetAwaiter().GetResult();
                     Check(window.Icon is System.Windows.Media.Imaging.BitmapFrame { PixelWidth: 256 });
                     var content = (System.Windows.FrameworkElement)window.Content;
@@ -540,19 +551,43 @@ await Test("native WPF menu keeps short lists unscrolled and long lists accessib
                     content.Arrange(new System.Windows.Rect(0, 0, 400, content.DesiredSize.Height));
                     content.UpdateLayout();
                     var labels = Descendants(content).OfType<System.Windows.Controls.TextBlock>().ToArray();
-                    foreach (var pair in new[] { ("work", "pro"), ("personal", "plus") })
+                    var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap(400, (int)Math.Ceiling(content.ActualHeight), 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+                    bitmap.Render(content);
+                    var titlePairs = new[] { ("work", "pro"), ("personal", "plus") };
+                    if (scenario == "team") titlePairs = [("northstar", "team"), ("bluerail", "team"), ("bluestudio", "team")];
+                    if (scenario == "many") titlePairs = titlePairs.Concat([("account-1", "team"), ("account-2", "team")]).ToArray();
+                    foreach (var pair in titlePairs)
                     {
                         var alias = labels.Single(l => l.Text == pair.Item1);
-                        var plan = labels.Single(l => l.Text == pair.Item2);
                         var title = (System.Windows.FrameworkElement)System.Windows.Media.VisualTreeHelper.GetParent(alias);
-                        var bitmap = new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(title.ActualWidth), (int)Math.Ceiling(title.ActualHeight), 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
-                        var visual = new System.Windows.Media.DrawingVisual();
-                        using (var drawing = visual.RenderOpen())
-                            drawing.DrawRectangle(new System.Windows.Media.VisualBrush(title), null, new System.Windows.Rect(0, 0, title.ActualWidth, title.ActualHeight));
-                        bitmap.Render(visual);
-                        var delta = Math.Abs(InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)alias.Foreground).Color) - InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)plan.Foreground).Color));
-                        Console.WriteLine($"INK CENTER {scenario} dark={dark} alias={pair.Item1} delta={delta:F1}px");
+                        var plan = Descendants(title).OfType<System.Windows.Controls.TextBlock>().Single(l => l.Text == pair.Item2);
+                        var aliasBounds = new System.Windows.Rect(alias.TranslatePoint(new System.Windows.Point(), content), alias.RenderSize);
+                        var planBounds = new System.Windows.Rect(plan.TranslatePoint(new System.Windows.Point(), content), plan.RenderSize);
+                        var aliasCenter = InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)alias.Foreground).Color, aliasBounds);
+                        var planCenter = InkCenter(bitmap, ((System.Windows.Media.SolidColorBrush)plan.Foreground).Color, planBounds);
+                        var delta = Math.Abs(aliasCenter - planCenter);
+                        Console.WriteLine($"INK CENTER {scenario} dark={dark} alias={pair.Item1} delta={delta:F1}px aliasY={aliasCenter:F1} planY={planCenter:F1}");
                         Check(delta <= 1);
+                    }
+                    if (scenario == "team")
+                    {
+                        var saved = (System.Windows.Controls.StackPanel)window.FindName("SavedPanel");
+                        foreach (System.Windows.Controls.Button card in saved.Children)
+                        {
+                            var cardContent = (System.Windows.Controls.StackPanel)card.Content;
+                            var cardLabels = Descendants(cardContent).OfType<System.Windows.Controls.TextBlock>().ToArray();
+                            var name = cardLabels.Single(l => l.Text == "bluerail" || l.Text == "bluestudio");
+                            var cache = cardLabels.Last();
+                            var nameBounds = new System.Windows.Rect(name.TranslatePoint(new System.Windows.Point(), content), name.RenderSize);
+                            var cacheBounds = new System.Windows.Rect(cache.TranslatePoint(new System.Windows.Point(), content), cache.RenderSize);
+                            var nameInk = TextInk(bitmap, ((System.Windows.Media.SolidColorBrush)name.Foreground).Color, nameBounds);
+                            var cacheInk = TextInk(bitmap, ((System.Windows.Media.SolidColorBrush)cache.Foreground).Color, cacheBounds);
+                            var cardTop = card.TranslatePoint(new System.Windows.Point(), content).Y;
+                            var topGap = nameInk.Top - cardTop;
+                            var bottomGap = cardTop + card.ActualHeight - cacheInk.Bottom - 1;
+                            Console.WriteLine($"CARD PADDING {name.Text} top={topGap:F1} bottom={bottomGap:F1}");
+                            Check(Math.Abs(topGap - bottomGap) <= 1);
+                        }
                     }
                     var scroll = (System.Windows.Controls.ScrollViewer)window.FindName("SavedAccountsScroll");
                     Console.WriteLine($"LAYOUT {scenario} dark={dark} height={content.ActualHeight:F0} scrollbar={scroll.ComputedVerticalScrollBarVisibility} viewport={scroll.ViewportHeight:F0} extent={scroll.ExtentHeight:F0}");
@@ -565,6 +600,13 @@ await Test("native WPF menu keeps short lists unscrolled and long lists accessib
                         var track = (System.Windows.Controls.Primitives.Track)bar.Template.FindName("PART_Track", bar);
                         Console.WriteLine($"SCROLLBAR bar={bar.ActualWidth:F0} track={track.ActualWidth:F0} thumb={track.Thumb.ActualWidth:F0} orientation={track.Orientation}");
                         Check(bar.ActualWidth <= 6 && track.Orientation == System.Windows.Controls.Orientation.Vertical && track.Thumb.ActualWidth <= 6);
+                        window.MaxHeight = 560;
+                        window.UpdateLayout();
+                        var accounts = (System.Windows.Controls.StackPanel)window.FindName("SavedPanel");
+                        var first = (System.Windows.FrameworkElement)accounts.Children[0];
+                        Console.WriteLine($"SHOWN LIST height={window.ActualHeight:F0} viewport={scroll.ViewportHeight:F0} account={first.ActualHeight:F0}");
+                        if (scroll.ViewportHeight < first.ActualHeight)
+                            throw new Exception("The visible account list cannot fit one complete account.");
                     }
                     var notice = (System.Windows.Controls.TextBlock)window.FindName("Notice");
                     if (scenario == "unmanaged") Check(notice.Text.Contains("import-current"));
@@ -666,21 +708,35 @@ IEnumerable<System.Windows.DependencyObject> Descendants(System.Windows.Dependen
     }
 }
 
-double InkCenter(System.Windows.Media.Imaging.BitmapSource bitmap, System.Windows.Media.Color color)
+double InkCenter(System.Windows.Media.Imaging.BitmapSource bitmap, System.Windows.Media.Color color, System.Windows.Rect bounds)
+    => TextInk(bitmap, color, bounds).Center;
+
+(double Center, int Top, int Bottom) TextInk(System.Windows.Media.Imaging.BitmapSource bitmap, System.Windows.Media.Color color, System.Windows.Rect bounds)
 {
     var pixels = new byte[bitmap.PixelWidth * bitmap.PixelHeight * 4];
     bitmap.CopyPixels(pixels, bitmap.PixelWidth * 4, 0);
-    var rows = new List<int>();
+    var background = ((int)bounds.Top * bitmap.PixelWidth + (int)bounds.Left) * 4;
+    var contrast = Math.Max(Math.Abs(color.B - pixels[background]), Math.Max(Math.Abs(color.G - pixels[background + 1]), Math.Abs(color.R - pixels[background + 2])));
+    double totalInk = 0, weightedY = 0;
+    var top = bitmap.PixelHeight;
+    var bottom = 0;
     for (var i = 0; i < bitmap.PixelWidth * bitmap.PixelHeight; i++)
     {
+        if (!bounds.Contains(new System.Windows.Point(i % bitmap.PixelWidth, i / bitmap.PixelWidth))) continue;
         var alpha = pixels[i * 4 + 3];
         if (alpha < 64) continue;
-        if (Math.Abs(pixels[i * 4] * 255d / alpha - color.B) < 4 &&
-            Math.Abs(pixels[i * 4 + 1] * 255d / alpha - color.G) < 4 &&
-            Math.Abs(pixels[i * 4 + 2] * 255d / alpha - color.R) < 4) rows.Add(i / bitmap.PixelWidth);
+        // Include antialiased strokes, which may never reach the full foreground color.
+        var ink = Math.Max(Math.Abs(pixels[i * 4] - pixels[background]), Math.Max(
+            Math.Abs(pixels[i * 4 + 1] - pixels[background + 1]),
+            Math.Abs(pixels[i * 4 + 2] - pixels[background + 2])));
+        if (ink < contrast / 4d) continue;
+        totalInk += ink;
+        weightedY += ink * (i / bitmap.PixelWidth);
+        top = Math.Min(top, i / bitmap.PixelWidth);
+        bottom = Math.Max(bottom, i / bitmap.PixelWidth);
     }
-    if (rows.Count == 0) throw new Exception("No rendered text pixels matched the expected foreground.");
-    return (rows.Min() + rows.Max()) / 2d;
+    if (totalInk == 0) throw new Exception("No rendered text pixels matched the expected foreground.");
+    return (weightedY / totalInk, top, bottom);
 }
 
 internal static class Fixtures

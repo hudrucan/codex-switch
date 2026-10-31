@@ -25,7 +25,7 @@ public partial class App : Application
         if (e.Args.Length != 0 && !preview && !demo) { Shutdown(2); return; }
         var scenario = preview && e.Args.Length >= 3 ? e.Args[2] : "active";
         var theme = preview && e.Args.Length == 4 ? e.Args[3] : null;
-        if (scenario is not ("active" or "unmanaged" or "many" or "closing") || theme is not (null or "light" or "dark")) { Shutdown(2); return; }
+        if (scenario is not ("active" or "unmanaged" or "many" or "closing" or "team") || theme is not (null or "light" or "dark")) { Shutdown(2); return; }
         Palette.Apply(theme is null ? null : theme == "dark");
         if (preview || demo)
         {
